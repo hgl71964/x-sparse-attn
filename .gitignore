@@ -12,7 +12,7 @@ eval/RULER/.vscode/
 *.out
 Block-Sparse-Attention/
 xattn/scripts/
-output/*
+output/*.pkl
 *.log
 
 best_metric/
