@@ -1,3 +1,34 @@
+
+"""
+flash_attn_func(q, k, v, dropout_p=0.0, softmax_scale=None, causal=False,
+                window_size=(-1, -1), alibi_slopes=None, deterministic=False):
+dropout_p should be set to 0.0 during evaluation
+Supports multi-query and grouped-query attention (MQA/GQA) by passing in KV with fewer heads
+than Q. Note that the number of heads in Q must be divisible by the number of heads in KV.
+For example, if Q has 6 heads and K, V have 2 heads, head 0, 1, 2 of Q will attention to head
+0 of K, V, and head 3, 4, 5 of Q will attention to head 1 of K, V.
+If window_size != (-1, -1), implements sliding window local attention. Query at position i
+will only attend to keys between
+[i + seqlen_k - seqlen_q - window_size[0], i + seqlen_k - seqlen_q + window_size[1]] inclusive.
+
+Arguments:
+    q: (batch_size, seqlen, nheads, headdim)
+    k: (batch_size, seqlen, nheads_k, headdim)
+    v: (batch_size, seqlen, nheads_k, headdim)
+    dropout_p: float. Dropout probability.
+    softmax_scale: float. The scaling of QK^T before applying softmax.
+        Default to 1 / sqrt(headdim).
+    causal: bool. Whether to apply causal attention mask (e.g., for auto-regressive modeling).
+    window_size: (left, right). If not (-1, -1), implements sliding window local attention.
+    alibi_slopes: (nheads,) or (batch_size, nheads), fp32. A bias of
+        (-alibi_slope * |i + seqlen_k - seqlen_q - j|)
+        is added to the attention score of query i and key j.
+    deterministic: bool. Whether to use the deterministic implementation of the backward pass,
+        which is slightly slower and uses more memory. The forward pass is always deterministic.
+Return:
+    out: (batch_size, seqlen, nheads, headdim).
+"""
+import gc
 from xattn.src.Xattention import Xattention_prefill
 XATTN_PREFILL = True
 # try:
@@ -23,6 +54,9 @@ try:
     FULL_PREFILL = True
 except:
     FULL_PREFILL = False
+# from flash_attn import flash_attn_interface  # for flash attn 2
+# from flash_attn_3 import flash_attn_interface # this import seems to be broken: https://github.com/Dao-AILab/flash-attention/issues/1536
+import flash_attn_interface  # must be manually added to PYTHONPATH, see build_sm90.sh
 import pickle
 import torch
 import time
@@ -84,6 +118,11 @@ if __name__ == "__main__":
         num_iterations = 50
         num_warmups = 30
         # warm up
+        print(f"len :{len}\n"
+              f"q.shape: {q.shape}\n"
+              f"k.shape: {k.shape}\n"
+              f"v.shape: {v.shape}\n"
+        )
         for i in range(num_warmups):
             try:
                 Xattention_prefill(q, k, v, stride=16, threshold=threshold, use_triton=True)
@@ -102,6 +141,8 @@ if __name__ == "__main__":
                 Minference_prefill(k, q, v)
             except:
                 MINFERENCE_PREFILL = False
+            # bs, nhead, seqlen, headim -> (batch_size, seqlen, nheads, headdim)
+            _ = flash_attn_interface.flash_attn_func(q.permute(0,2,1,3), k.permute(0,2,1,3), v.permute(0,2,1,3), softmax_scale=None, causal=True)
 
         # Efficiency Evaluation
         # For Flexprefill_prefill
@@ -116,6 +157,8 @@ if __name__ == "__main__":
             torch.cuda.synchronize()
             total_time_flex += time.time() - start_time
         avg_time_flex = total_time_flex / num_iterations
+        # del flex_prefill_output
+        # gc.collect()
 
         # For Xattention_prefill
         total_time_xattn_8 = 0
@@ -126,6 +169,8 @@ if __name__ == "__main__":
             torch.cuda.synchronize()
             total_time_xattn_8 += time.time() - start_time
         avg_time_xattn_8 = total_time_xattn_8 / num_iterations
+        del flex_prefill_output
+        gc.collect()
 
         total_time_xattn_16 = 0
         for _ in range(num_iterations):
@@ -135,6 +180,8 @@ if __name__ == "__main__":
             torch.cuda.synchronize()
             total_time_xattn_16 += time.time() - start_time
         avg_time_xattn_16 = total_time_xattn_16 / num_iterations
+        del flex_prefill_output
+        gc.collect()
 
         # For minference
         total_time_minfer = 0
@@ -149,17 +196,28 @@ if __name__ == "__main__":
             torch.cuda.synchronize()
             total_time_minfer += time.time() - start_time
         avg_time_minfer = total_time_minfer / num_iterations
+        # del flex_prefill_output
+        # gc.collect()
 
-        # For flashinfer
+        # For flash attention
         total_time_flashinfer = 0
         torch.cuda.synchronize()
+        # permute outside of timer
+        q_flash, k_flash, v_flash = q.permute(0,2,1,3), k.permute(0,2,1,3), v.permute(0,2,1,3)
         start_time = time.time()
-        o = Full_prefill(q, k, v, causal=False)
+        # o = Full_prefill(q, k, v, causal=False)
+        try:
+            o = flash_attn_interface.flash_attn_func(q_flash, k_flash, v_flash, softmax_scale=None, causal=True)
+        except:
+            continue
         torch.cuda.synchronize()
         total_time_flashinfer += time.time() - start_time
         avg_time_flashinfer = total_time_flashinfer
+        del o
+        del q_flash, k_flash, v_flash
+        gc.collect()
 
-        # Calculate speedups
+        # Calculate speedups -> # full here is fa3
         print(f"{len}K Minfer {avg_time_minfer:.4f} flex: {avg_time_flex:.4f} xattn_8: {avg_time_xattn_8:.4f} xattn_16: {avg_time_xattn_16:.4f} full: {avg_time_flashinfer:.4f} ")
         speedup_flex = avg_time_flashinfer / avg_time_flex
         speedup_xattn_8 = avg_time_flashinfer / avg_time_xattn_8
