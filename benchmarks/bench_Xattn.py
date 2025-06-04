@@ -530,6 +530,7 @@ def Xattention_prefill(
 if __name__ == "__main__":
 
     lens = [4,8,16,32,64,128]
+    # lens = [8,32,64,128]
     args = parse_args()
     print(f'Model: {args.m}, Dataset: {args.d}')
 
@@ -545,7 +546,6 @@ if __name__ == "__main__":
         layer_to_save = 12
         if not os.path.exists(query_path) or not os.path.exists(key_path):
             
-            past_key_values = None
             # model, tokenizer = load_fake_model(name_or_path="meta-llama/Llama-3.1-8B-Instruct", layer_to_save=layer_to_save, target_len=len*1024)
             model, tokenizer = load_fake_model(name_or_path=args.m, layer_to_save=layer_to_save, target_len=len*1024)
             input_ids = generate_prompt(tokenizer,len*1024, datasets=args.d)
@@ -559,6 +559,7 @@ if __name__ == "__main__":
                 # for i in tqdm(range(0, input_ids.size(1), chunk_size), desc="Prefilling", unit="chunk"):
                 for i in range(0, input_ids.size(1), chunk_size):
                     chunk = input_ids[:, i: i + chunk_size]
+                    # print(chunk.shape)
                     output = model(
                         input_ids=chunk,
                         past_key_values=past_key_values,

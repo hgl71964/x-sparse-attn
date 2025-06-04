@@ -51,52 +51,58 @@ def _long_bench_v1(tokenizer, target_len, task_filter=None):
             "dureader", "gov_report", "qmsum", "multi_news", "vcsum", "trec", "triviaqa", "samsum", "lsht", 
             "passage_count", "passage_retrieval_en", "passage_retrieval_zh", "lcc", "repobench-p"]
     
-    if tokenizer.pad_token is None:
-        tokenizer.add_special_tokens({'pad_token': '[PAD]'})
-
     for sub_dataset in sub_datasets:
         data = load_dataset('THUDM/LongBench', sub_dataset, split='test')
                 
         tolerance = 0.05
         lower_bound = int(target_len * (1 - tolerance))
         upper_bound = int(target_len * (1 + tolerance))
-        
+
         for i, instance in enumerate(data):
             inputs = instance.get('input')
             context = instance.get('context')
             prompt = build_chat(inputs, context)
 
+            tokenized_output = tokenizer(
+                prompt,
+                return_tensors="pt",
+                add_special_tokens=False,
+            )
+            length = tokenized_output['input_ids'].shape[1]
+
+            # XXX: so padding needs to add special tokens
+            # it causes CUDA error for the embedding table, 
+            # so we only use truncates
+            # 
             # Tokenize the prompt
             # - padding='max_length': pads the sequence to target_len if it's shorter.
             # - truncation=True: truncates the sequence to target_len if it's longer.
             # - max_length=target_len: specifies the target length.
             # - return_tensors='pt': returns PyTorch tensors.
-            tokenized_output = tokenizer(
-                prompt,
-                # max_length=target_len,
-                # padding="max_length",
-                # truncation=True,
-                return_tensors="pt",
-                add_special_tokens=True, # Usually True, adds [CLS], [SEP] etc.
-            )
+            #if tokenizer.pad_token is None:
+            #    tokenizer.add_special_tokens({'pad_token': '[PAD]'})
+            #if lower_bound <= length <= upper_bound:
+            #    # print(f'{lower_bound=}, {input_ids.shape}, {upper_bound=}')
+            #    tokenized_output = tokenizer(
+            #        prompt,
+            #        max_length=target_len,
+            #        padding="max_length",
+            #        truncation=True,
+            #        return_tensors="pt",
+            #        add_special_tokens=False, 
+            #    )
+            #    input_ids = tokenized_output['input_ids'].to("cuda")
+            #    return input_ids
 
-            # input_ids will be a 2D tensor of shape [1, target_len] because we processed a single string.
-            # We can squeeze it to get a 1D tensor.
-            # input_ids = tokenized_output['input_ids'].squeeze(0)
-            input_ids = tokenized_output['input_ids']
-
-            # print(f'{sub_dataset}, {i=}, {input_ids.shape}')
-            if lower_bound <= input_ids.shape[1] <= upper_bound:
+            if target_len <= length <= upper_bound:
                 # print(f'{lower_bound=}, {input_ids.shape}, {upper_bound=}')
-
-                # make it exact
                 tokenized_output = tokenizer(
                     prompt,
                     max_length=target_len,
-                    padding="max_length",
+                    # padding="max_length",
                     truncation=True,
                     return_tensors="pt",
-                    add_special_tokens=True, 
+                    add_special_tokens=False, 
                 )
                 input_ids = tokenized_output['input_ids'].to("cuda")
                 return input_ids
