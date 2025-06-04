@@ -452,19 +452,40 @@ def forward_to_save(
 
         return attn_output, None, past_key_value
 
-def load_fake_model(layer_to_save,target_len,name_or_path=""):
-    model = LlamaForCausalLM.from_pretrained(
-        name_or_path,
-        device_map="balanced", 
-        torch_dtype=torch.bfloat16,
-    )
+def load_fake_model(layer_to_save,target_len,name_or_path="", token=None):
+    from transformers import AutoTokenizer, AutoModelForCausalLM
+
+    if token is not None:
+        model = AutoModelForCausalLM.from_pretrained(
+            name_or_path,
+            device_map="balanced", 
+            torch_dtype=torch.bfloat16,
+            use_auth_token=token,
+        )
+    else:
+        model = AutoModelForCausalLM.from_pretrained(
+            name_or_path,
+            device_map="balanced", 
+            torch_dtype=torch.bfloat16,
+        )
+        #model = LlamaForCausalLM.from_pretrained(
+        #    name_or_path,
+        #    device_map="balanced", 
+        #    torch_dtype=torch.bfloat16,
+        #)
     model.eval()
     for layer in model.model.layers:
         layer.self_attn.fastprefillconfig = FastPrefillConfig()
         layer.self_attn.layer_to_save = layer_to_save
         layer.self_attn.target_len = target_len
         layer.self_attn.forward = forward_to_save.__get__(layer.self_attn)
-    tokenizer = AutoTokenizer.from_pretrained(
-        name_or_path
-    )
+    if token is not None:
+        tokenizer = AutoTokenizer.from_pretrained(
+            name_or_path,
+            use_auth_token=token,
+        )
+    else:
+        tokenizer = AutoTokenizer.from_pretrained(
+            name_or_path
+        )
     return model, tokenizer

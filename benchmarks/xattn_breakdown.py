@@ -13,14 +13,22 @@ import os
 import math
 import statistics
 import argparse
+
+# python benchmarks/xattn_breakdown.py -d default -m xx  > tmp.txt && sleep 1 && python benchmarks/format_breakdown.py
+
 def parse_args():
     parser = argparse.ArgumentParser()
+    parser.add_argument("-t", type=str, default=None)
+
+    # NOTE: change of model or dataset need to `rm -rf output`
+
     parser.add_argument("-d", type=str, default='longbench')
 
     # gradientai/Llama-3-8B-Instruct-Gradient-1048k
     # CohereLabs/aya-23-8B
-    # CohereLabs/c4ai-command-r-v01
-    parser.add_argument("-m", type=str, default='gradientai/Llama-3-8B-Instruct-Gradient-1048k')
+    # CohereLabs/c4ai-command-r7b-12-2 (not compatible type)
+    # mistralai/Mistral-7B-v0.1
+    parser.add_argument("-m", type=str, default='CohereLabs/aya-23-8B')
     return parser.parse_args()
 
 
@@ -552,7 +560,11 @@ if __name__ == "__main__":
             print(f'[NEW Q, K, V]')
             
             # model, tokenizer = load_fake_model(name_or_path="meta-llama/Llama-3.1-8B-Instruct", layer_to_save=layer_to_save, target_len=len*1024)
-            model, tokenizer = load_fake_model(name_or_path=args.m, layer_to_save=layer_to_save, target_len=len*1024)
+            model, tokenizer = load_fake_model(name_or_path=args.m,
+                                               layer_to_save=layer_to_save, 
+                                               target_len=len*1024,
+                                               token=args.t,
+                                               )
             input_ids = generate_prompt(tokenizer,len*1024, datasets=args.d)
             # print(input_ids.shape)
             chunk_size = 4096
