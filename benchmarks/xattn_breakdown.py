@@ -16,6 +16,10 @@ import argparse
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("-d", type=str, default='longbench')
+
+    # gradientai/Llama-3-8B-Instruct-Gradient-1048k
+    # CohereLabs/aya-23-8B
+    # CohereLabs/c4ai-command-r-v01
     parser.add_argument("-m", type=str, default='gradientai/Llama-3-8B-Instruct-Gradient-1048k')
     return parser.parse_args()
 
