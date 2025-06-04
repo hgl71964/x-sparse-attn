@@ -132,6 +132,11 @@ def print_all(tokenizer):
             print(f'{input_ids.shape}, ',end='')
         print()
 
+def ruler(tokenizer):
+    # ruler_data_for_tokenization = load_dataset("NVIDIA/RULER", sub_dataset, split="test")
+    data = load_dataset("NVIDIA/RULER", split="test")
+    print(data.keys())
+
 
 def main():
     args = parse_args()
@@ -139,8 +144,9 @@ def main():
     tokenizer = AutoTokenizer.from_pretrained(
         args.m
     )
-    # examine(tokenizer)
-    print_all(tokenizer)
+    examine(tokenizer)
+    # print_all(tokenizer)
+    # ruler(tokenizer)
 
 if __name__ == '__main__':
     main()
