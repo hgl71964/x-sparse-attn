@@ -545,16 +545,19 @@ if __name__ == "__main__":
         layer_to_save = 12
         if not os.path.exists(query_path) or not os.path.exists(key_path):
             
+            past_key_values = None
             # model, tokenizer = load_fake_model(name_or_path="meta-llama/Llama-3.1-8B-Instruct", layer_to_save=layer_to_save, target_len=len*1024)
             model, tokenizer = load_fake_model(name_or_path=args.m, layer_to_save=layer_to_save, target_len=len*1024)
             input_ids = generate_prompt(tokenizer,len*1024, datasets=args.d)
+            # print(input_ids.shape)
             chunk_size = 4096
             if past_key_values is not None:
                 past_key_values.reset()
             else:
                 past_key_values = StaticCache(config=model.config, batch_size=1, max_cache_len=300000, device=model.device, dtype=model.dtype)
             with torch.no_grad():
-                for i in tqdm(range(0, input_ids.size(1), chunk_size), desc="Prefilling", unit="chunk"):
+                # for i in tqdm(range(0, input_ids.size(1), chunk_size), desc="Prefilling", unit="chunk"):
+                for i in range(0, input_ids.size(1), chunk_size):
                     chunk = input_ids[:, i: i + chunk_size]
                     output = model(
                         input_ids=chunk,

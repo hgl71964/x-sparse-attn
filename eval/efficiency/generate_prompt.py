@@ -7,12 +7,15 @@ def generate_prompt(tokenizer,target_len,datasets='default'):
     if datasets == 'default':
         input_ids = _default(tokenizer, target_len)
     elif datasets == 'longbench':
-        input_ids = _long_bench(tokenizer, target_len, task_filter=None)
+        input_ids = _long_bench_v1(tokenizer, target_len, task_filter=None)
     else:
         raise RuntimeError(f"Unknown dataset: {datasets}")
 
     return input_ids
 
+#########################################
+######################################### default
+#########################################
 def _default(tokenizer, target_len: int):
     context = "A quick brown fox jumps over the lazy dog. \n"
     with open("demo/xattention.txt", "r") as f:
@@ -38,51 +41,64 @@ def _default(tokenizer, target_len: int):
 #########################################
 ######################################### long bench
 #########################################
-def _long_bench(tokenizer, target_len, task_filter=None):
-    dataset_version = "v1"
-    sub_dataset="narrativeqa samsum qasper triviaqa hotpotqa multifieldqa_en multifieldqa_zh 2wikimqa musique dureader gov_report qmsum multi_news vcsum trec lsht passage_count passage_retrieval_en passage_retrieval_zh lcc repobench-p"
-    sub_dataset = sub_dataset.split()
-    sub_dataset = sub_dataset[0]
+def _long_bench_v1(tokenizer, target_len, task_filter=None):
 
-    try:
-        if dataset_version == "v2":
-            # data = load_dataset('THUDM/LongBench-v2', split='train')
-            raise 
-        elif dataset_version == "v1":
-            data = load_dataset('THUDM/LongBench', sub_dataset, split='test')
-        else:
-            raise ValueError(f"Unsupported dataset version: {dataset_version}")
-            
-    except Exception as e:
-        raise ValueError(f"Failed to load dataset: {e}")
+    def build_chat(inputs, context):
+        prompt = f"Context: {context}\n\nQuestion: {inputs}\n\nAnswer:"
+        return prompt
+
+    sub_datasets= ["narrativeqa", "qasper", "multifieldqa_en", "multifieldqa_zh", "hotpotqa", "2wikimqa", "musique", 
+            "dureader", "gov_report", "qmsum", "multi_news", "vcsum", "trec", "triviaqa", "samsum", "lsht", 
+            "passage_count", "passage_retrieval_en", "passage_retrieval_zh", "lcc", "repobench-p"]
     
-    tolerance = 0.05
-    lower_bound = int(target_len * (1 - tolerance))
-    upper_bound = int(target_len * (1 + tolerance))
-    
-    for i, instance in enumerate(data):
-        prompt = instance.get('input')
+    if tokenizer.pad_token is None:
+        tokenizer.add_special_tokens({'pad_token': '[PAD]'})
 
-        # Tokenize the prompt
-        # - padding='max_length': pads the sequence to target_len if it's shorter.
-        # - truncation=True: truncates the sequence to target_len if it's longer.
-        # - max_length=target_len: specifies the target length.
-        # - return_tensors='pt': returns PyTorch tensors.
-        tokenized_output = tokenizer(
-            prompt,
-            # max_length=target_len,
-            # padding="max_length",
-            # truncation=True,
-            return_tensors="pt",
-            add_special_tokens=True, # Usually True, adds [CLS], [SEP] etc.
-        )
+    for sub_dataset in sub_datasets:
+        data = load_dataset('THUDM/LongBench', sub_dataset, split='test')
+                
+        tolerance = 0.05
+        lower_bound = int(target_len * (1 - tolerance))
+        upper_bound = int(target_len * (1 + tolerance))
+        
+        for i, instance in enumerate(data):
+            inputs = instance.get('input')
+            context = instance.get('context')
+            prompt = build_chat(inputs, context)
 
-        # input_ids will be a 2D tensor of shape [1, target_len] because we processed a single string.
-        # We can squeeze it to get a 1D tensor.
-        input_ids = tokenized_output['input_ids'].squeeze(0)
+            # Tokenize the prompt
+            # - padding='max_length': pads the sequence to target_len if it's shorter.
+            # - truncation=True: truncates the sequence to target_len if it's longer.
+            # - max_length=target_len: specifies the target length.
+            # - return_tensors='pt': returns PyTorch tensors.
+            tokenized_output = tokenizer(
+                prompt,
+                # max_length=target_len,
+                # padding="max_length",
+                # truncation=True,
+                return_tensors="pt",
+                add_special_tokens=True, # Usually True, adds [CLS], [SEP] etc.
+            )
 
-        if lower_bound <= len(input_ids) <= upper_bound:
-            print(f'{lower_bound=}, {len(input_ids)=}, {upper_bound=}')
-            return input_ids
+            # input_ids will be a 2D tensor of shape [1, target_len] because we processed a single string.
+            # We can squeeze it to get a 1D tensor.
+            # input_ids = tokenized_output['input_ids'].squeeze(0)
+            input_ids = tokenized_output['input_ids']
+
+            # print(f'{sub_dataset}, {i=}, {input_ids.shape}')
+            if lower_bound <= input_ids.shape[1] <= upper_bound:
+                # print(f'{lower_bound=}, {input_ids.shape}, {upper_bound=}')
+
+                # make it exact
+                tokenized_output = tokenizer(
+                    prompt,
+                    max_length=target_len,
+                    padding="max_length",
+                    truncation=True,
+                    return_tensors="pt",
+                    add_special_tokens=True, 
+                )
+                input_ids = tokenized_output['input_ids'].to("cuda")
+                return input_ids
 
     raise ValueError(f"Failed to generate prompt with target length {target_len}")

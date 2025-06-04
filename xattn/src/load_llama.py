@@ -412,6 +412,9 @@ def forward_to_save(
         if self.layer_idx == self.layer_to_save:
             import pickle
             import os
+            if not os.path.exists("output"):
+                os.makedirs("output")
+
             query_path = f"output/query_{self.target_len}.pkl"
             key_path = f"output/key_{self.target_len}.pkl"
             if os.path.exists(query_path) and os.path.getsize(query_path) > 0:  

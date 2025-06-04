@@ -2,6 +2,12 @@ from transformers import AutoTokenizer # For example
 from datasets import load_dataset     # For example usage
 import torch                          # Assuming you want PyTorch tensors
 
+import argparse
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-m", type=str, default='gradientai/Llama-3-8B-Instruct-Gradient-1048k')
+    return parser.parse_args()
+
 def generate_input_ids(prompt_text: str, tokenizer, target_len: int):
     """
     Tokenizes a given prompt string to input_ids,
@@ -38,16 +44,17 @@ def generate_input_ids(prompt_text: str, tokenizer, target_len: int):
 
     # input_ids will be a 2D tensor of shape [1, target_len] because we processed a single string.
     # We can squeeze it to get a 1D tensor.
-    input_ids = tokenized_output['input_ids'].squeeze(0)
+    # input_ids = tokenized_output['input_ids'].squeeze(0)
+    input_ids = tokenized_output['input_ids']
 
     return input_ids
 
-# --- Example Usage ---
-if __name__ == '__main__':
+def examine(tokenizer):
     # 1. Choose a sub-dataset from LongBench
     # (Make sure you have `datasets` installed: pip install datasets)
     # (And `transformers` and `torch`: pip install transformers torch)
-    longbench_sub_dataset = "narrativeqa" # Example, pick one you want to test
+    # longbench_sub_dataset = "narrativeqa" # Example, pick one you want to test
+    longbench_sub_dataset = "lcc" # Example, pick one you want to test
 
     print(f"Loading dataset: THUDM/LongBench, config: {longbench_sub_dataset}")
     try:
@@ -55,17 +62,6 @@ if __name__ == '__main__':
     except Exception as e:
         print(f"Error loading dataset: {e}")
         print("Please ensure the sub-dataset name is correct and you have internet access.")
-        exit()
-
-    # 2. Load a tokenizer
-    # Using a small, common tokenizer for this example.
-    # For actual LongBench tasks, you'd use the tokenizer corresponding to your model.
-    tokenizer_name = "bert-base-uncased"
-    print(f"Loading tokenizer: {tokenizer_name}")
-    try:
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-    except Exception as e:
-        print(f"Error loading tokenizer: {e}")
         exit()
 
     # 3. Define a target length for tokenized sequences
@@ -104,3 +100,47 @@ if __name__ == '__main__':
             print(f"Available keys: {instance.keys()}")
 
     print("\nExample finished.")
+
+def build_chat(inputs, context):
+    prompt = f"Context: {context}\n\nQuestion: {inputs}\n\nAnswer:"
+    return prompt
+
+
+def print_all(tokenizer):
+    sub_datasets= ["narrativeqa", "qasper", "multifieldqa_en", "multifieldqa_zh", "hotpotqa", "2wikimqa", "musique", 
+            "dureader", "gov_report", "qmsum", "multi_news", "vcsum", "trec", "triviaqa", "samsum", "lsht", 
+            "passage_count", "passage_retrieval_en", "passage_retrieval_zh", "lcc", "repobench-p"]
+
+    for sub_dataset in sub_datasets:
+        data = load_dataset('THUDM/LongBench', sub_dataset, split='test')
+        print(f'Loading dataset: THUDM/LongBench, config: {sub_dataset}, len: {len(data)}')
+
+        for i, instance in enumerate(data):
+            inputs = instance.get('input')
+            context = instance.get('context')
+            prompt = build_chat(inputs, context)
+
+            tokenized_output = tokenizer(
+                prompt,
+                # max_length=target_len,
+                # padding="max_length",
+                # truncation=True,
+                return_tensors="pt",
+                add_special_tokens=True, # Usually True, adds [CLS], [SEP] etc.
+            )
+            input_ids = tokenized_output['input_ids']
+            print(f'{input_ids.shape}, ',end='')
+        print()
+
+
+def main():
+    args = parse_args()
+    print(f'model: {args.m}')
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.m
+    )
+    # examine(tokenizer)
+    print_all(tokenizer)
+
+if __name__ == '__main__':
+    main()
