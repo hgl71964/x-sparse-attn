@@ -66,10 +66,54 @@ from xattn.threshold.llama_threshold import llama_fuse_8,llama_fuse_16
 from transformers import StaticCache
 from tqdm import tqdm
 import os
+import math
+import statistics
+import argparse
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("-d", type=str, default='longbench')
+    parser.add_argument("-m", type=str, default='gradientai/Llama-3-8B-Instruct-Gradient-1048k')
+    return parser.parse_args()
+
+
+def _quantile(a, q):
+    n = len(a)
+    a = sorted(a)
+
+    def get_quantile(q):
+        if not (0 <= q <= 1):
+            raise ValueError("Quantiles must be in the range [0, 1]")
+        point = q * (n - 1)
+        lower = math.floor(point)
+        upper = math.ceil(point)
+        t = point - lower
+        return (1 - t) * a[lower] + t * a[upper]
+
+    return [get_quantile(q) for q in q]
+
+def _summarize_statistics(times, quantiles=None, return_mode='mean'):
+    if quantiles is not None:
+        ret = _quantile(times, quantiles)
+        if len(ret) == 1:
+            ret = ret[0]
+        return ret
+    if return_mode == "all":
+        return times
+    elif return_mode == "min":
+        return min(times)
+    elif return_mode == "max":
+        return max(times)
+    elif return_mode == "mean":
+        return statistics.mean(times)
+    elif return_mode == "median":
+        return statistics.median(times)
 
 if __name__ == "__main__":
 
     lens = [4,8,16,32,64,128]
+    args = parse_args()
+    print(f'Model: {args.m}, Dataset: {args.d}')
 
     speedups_flex = []
     speedups_xattn_8 = []
@@ -84,9 +128,9 @@ if __name__ == "__main__":
         layer_to_save = 12
         if not os.path.exists(query_path) or not os.path.exists(key_path):
             
-            #model, tokenizer = load_fake_model(name_or_path="meta-llama/Llama-3.1-8B-Instruct", layer_to_save=layer_to_save, target_len=len*1024)
-            model, tokenizer = load_fake_model(name_or_path="gradientai/Llama-3-8B-Instruct-Gradient-1048k", layer_to_save=layer_to_save, target_len=len*1024)
-            input_ids = generate_prompt(tokenizer,len*1024)
+            # model, tokenizer = load_fake_model(name_or_path="meta-llama/Llama-3.1-8B-Instruct", layer_to_save=layer_to_save, target_len=len*1024)
+            model, tokenizer = load_fake_model(name_or_path=args.m, layer_to_save=layer_to_save, target_len=len*1024)
+            input_ids = generate_prompt(tokenizer,len*1024, datasets=args.d)
             chunk_size = 4096
             if past_key_values is not None:
                 past_key_values.reset()
@@ -116,13 +160,13 @@ if __name__ == "__main__":
         threshold = torch.tensor(llama_fuse_8)[layer_to_save]
         stride = 16
         v = torch.randn(q.shape, dtype=torch.bfloat16).to("cuda").contiguous()
-        num_iterations = 50
+        num_iterations = 100
         num_warmups = 30
         # warm up
-        print(f"len :{len}\n"
-              f"q.shape: {q.shape}\n"
-              f"k.shape: {k.shape}\n"
-              f"v.shape: {v.shape}\n"
+        print(f"len :{len}K\n"
+              f"q.shape: {q.shape}, {q.dtype}\n"
+              f"k.shape: {k.shape}, {k.dtype}\n"
+              f"v.shape: {v.shape}, {v.dtype}\n"
         )
         for i in range(num_warmups):
             try:
@@ -145,6 +189,17 @@ if __name__ == "__main__":
             # bs, nhead, seqlen, headim -> (batch_size, seqlen, nheads, headdim)
             _ = flash_attn_interface.flash_attn_func(q.permute(0,2,1,3), k.permute(0,2,1,3), v.permute(0,2,1,3), softmax_scale=None, causal=True)
 
+        #####################################################################
+        #####################################################################
+        #####################################################################
+        #####################################################################
+        #####################################################################
+
+        # We maintain a buffer of 256 MB that we clear
+        # before each kernel call to make sure that the L2
+        # doesn't contain any input data before the run
+        cache = torch.empty(int(256e6), dtype=torch.int8, device='cuda')
+
         # Efficiency Evaluation
         # For Flexprefill_prefill
         total_time_flex = 0
@@ -161,26 +216,33 @@ if __name__ == "__main__":
         # del flex_prefill_output
         # gc.collect()
 
+        #
         # For Xattention_prefill
-        total_time_xattn_8 = 0
-        for _ in range(num_iterations):
-            torch.cuda.synchronize()
-            start_time = time.time()
+        #
+        torch.cuda.synchronize()
+        start_event = [torch.cuda.Event(enable_timing=True) for i in range(num_iterations)]
+        end_event = [torch.cuda.Event(enable_timing=True) for i in range(num_iterations)]
+        for i in range(num_iterations):
+            cache.zero_()
+            start_event[i].record()
             flex_prefill_output = Xattention_prefill(q, k, v, stride=8, threshold= threshold, use_triton=True,chunk_size=min(32768,len*1024))
-            torch.cuda.synchronize()
-            total_time_xattn_8 += time.time() - start_time
-        avg_time_xattn_8 = total_time_xattn_8 / num_iterations
+            end_event[i].record()
+        torch.cuda.synchronize()
+        times = [s.elapsed_time(e) for s, e in zip(start_event, end_event)]
+        avg_time_xattn_8 = _summarize_statistics(times)
         del flex_prefill_output
         gc.collect()
 
-        total_time_xattn_16 = 0
-        for _ in range(num_iterations):
-            torch.cuda.synchronize()
-            start_time = time.time()
+        start_event = [torch.cuda.Event(enable_timing=True) for i in range(num_iterations)]
+        end_event = [torch.cuda.Event(enable_timing=True) for i in range(num_iterations)]
+        for i in range(num_iterations):
+            cache.zero_()
+            start_event[i].record()
             flex_prefill_output = Xattention_prefill(q, k, v, stride=16, threshold= threshold, use_triton=True,chunk_size=min(32768,len*1024))
-            torch.cuda.synchronize()
-            total_time_xattn_16 += time.time() - start_time
-        avg_time_xattn_16 = total_time_xattn_16 / num_iterations
+            end_event[i].record()
+        torch.cuda.synchronize()
+        times = [s.elapsed_time(e) for s, e in zip(start_event, end_event)]
+        avg_time_xattn_16 = _summarize_statistics(times)
         del flex_prefill_output
         gc.collect()
 
@@ -201,35 +263,47 @@ if __name__ == "__main__":
         # gc.collect()
 
         # For flash attention
-        total_time_flashinfer = 0
-        torch.cuda.synchronize()
         # permute outside of timer
         q_flash, k_flash, v_flash = q.permute(0,2,1,3), k.permute(0,2,1,3), v.permute(0,2,1,3)
-        start_time = time.time()
-        # o = Full_prefill(q, k, v, causal=False)
-        try:
+
+        start_event = [torch.cuda.Event(enable_timing=True) for i in range(num_iterations)]
+        end_event = [torch.cuda.Event(enable_timing=True) for i in range(num_iterations)]
+        for i in range(num_iterations):
+            cache.zero_()
+            start_event[i].record()
             o = flash_attn_interface.flash_attn_func(q_flash, k_flash, v_flash, softmax_scale=None, causal=True)
-        except:
-            continue
+            end_event[i].record()
         torch.cuda.synchronize()
-        total_time_flashinfer += time.time() - start_time
-        avg_time_flashinfer = total_time_flashinfer
+        times = [s.elapsed_time(e) for s, e in zip(start_event, end_event)]
+        avg_time_flash_attn = _summarize_statistics(times)
+
         del o
         del q_flash, k_flash, v_flash
         gc.collect()
 
         # Calculate speedups -> # full here is fa3
-        print(f"{len}K Minfer {avg_time_minfer:.4f} flex: {avg_time_flex:.4f} xattn_8: {avg_time_xattn_8:.4f} xattn_16: {avg_time_xattn_16:.4f} full: {avg_time_flashinfer:.4f} ")
-        speedup_flex = avg_time_flashinfer / avg_time_flex
-        speedup_xattn_8 = avg_time_flashinfer / avg_time_xattn_8
-        speedup_xattn_16 = avg_time_flashinfer / avg_time_xattn_16
-        speedup_minfer = avg_time_flashinfer / avg_time_minfer
+        print(f"{len}K Minfer {avg_time_minfer:.4f} flex: {avg_time_flex:.4f} xattn_8: {avg_time_xattn_8:.4f} xattn_16: {avg_time_xattn_16:.4f} full: {avg_time_flash_attn:.4f} ")
+        print(f'*'*120)
+        speedup_flex = avg_time_flash_attn / avg_time_flex
+        speedup_xattn_8 = avg_time_flash_attn / avg_time_xattn_8
+        speedup_xattn_16 = avg_time_flash_attn / avg_time_xattn_16
+        speedup_minfer = avg_time_flash_attn / avg_time_minfer
         speedups_flex.append(speedup_flex)
         speedups_xattn_8.append(speedup_xattn_8)
         speedups_xattn_16.append(speedup_xattn_16)
         speedups_minfer.append(speedup_minfer)
 
     # Output results
-    print(f"\n{'Length':<10}{'Flex Speedup':<15}{'Xattn 8 Speedup':<20}{'Xattn 16 Speedup':<25}{'Minfer Speedup'}")
-    for len, speedup_flex, speedup_xattn_8, speedup_xattn_16,speedup_minfer in zip(lens, speedups_flex, speedups_xattn_8, speedups_xattn_16, speedups_minfer):
-        print(f"{str(len):<10}{speedup_flex:<15.2f}{speedup_xattn_8:<20.2f}{speedup_xattn_16:<25.2f}{speedup_minfer:.2f}")
+    # print(f"\n{'Length':<10}{'Flex Speedup':<15}{'Xattn 8 Speedup':<20}{'Xattn 16 Speedup':<25}{'Minfer Speedup'}")
+    # for len, speedup_flex, speedup_xattn_8, speedup_xattn_16,speedup_minfer in zip(lens, speedups_flex, speedups_xattn_8, speedups_xattn_16, speedups_minfer):
+    #     print(f"{str(len):<10}{speedup_flex:<15.2f}{speedup_xattn_8:<20.2f}{speedup_xattn_16:<25.2f}{speedup_minfer:.2f}")
+
+    # Print table header
+    print(f"\n{'Length':<12}{'Xattn 8 Speedup':<20}{'Xattn 16 Speedup':<20}")
+
+    # Print each row of data
+    for length, speedup_flex, speedup_xattn_8, speedup_xattn_16, speedup_minfer in zip(
+        lens, speedups_flex, speedups_xattn_8, speedups_xattn_16, speedups_minfer
+    ):
+        length_str = f"{length}K"
+        print(f"{length_str:<12}{speedup_xattn_8:<20.2f}{speedup_xattn_16:<20.2f}")

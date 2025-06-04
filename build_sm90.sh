@@ -33,5 +33,7 @@ python setup.py install
 export PYTHONPATH="$PYTHONPATH:$(pwd)"
 cd ../../..
 
+# export PYTHONPATH=/root/repos/mike_x_attn:/root/repos/mike_x_attn/third-party/flash-attention/hopper
+
 # Below will benchmark speedup (XAttention only, FlexPrefill and MInference will not work with this build)
 python eval/efficiency/attention_speedup_flashattn.py 

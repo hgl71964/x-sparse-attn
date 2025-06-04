@@ -70,6 +70,7 @@ import os
 if __name__ == "__main__":
 
     lens = [4,8,16,32,64,128]
+    # lens = [4,8]
 
     speedups_flex = []
     speedups_xattn_8 = []
@@ -83,7 +84,7 @@ if __name__ == "__main__":
         config = FastPrefillConfig(metric = "xattn",stride = 16)
         layer_to_save = 12
         if not os.path.exists(query_path) or not os.path.exists(key_path):
-            
+
             #model, tokenizer = load_fake_model(name_or_path="meta-llama/Llama-3.1-8B-Instruct", layer_to_save=layer_to_save, target_len=len*1024)
             model, tokenizer = load_fake_model(name_or_path="gradientai/Llama-3-8B-Instruct-Gradient-1048k", layer_to_save=layer_to_save, target_len=len*1024)
             input_ids = generate_prompt(tokenizer,len*1024)
@@ -213,23 +214,37 @@ if __name__ == "__main__":
             continue
         torch.cuda.synchronize()
         total_time_flashinfer += time.time() - start_time
-        avg_time_flashinfer = total_time_flashinfer
+        avg_time_fa = total_time_flashinfer
         del o
         del q_flash, k_flash, v_flash
         gc.collect()
 
         # Calculate speedups -> # full here is fa3
-        print(f"{len}K Minfer {avg_time_minfer:.4f} flex: {avg_time_flex:.4f} xattn_8: {avg_time_xattn_8:.4f} xattn_16: {avg_time_xattn_16:.4f} full: {avg_time_flashinfer:.4f} ")
-        speedup_flex = avg_time_flashinfer / avg_time_flex
-        speedup_xattn_8 = avg_time_flashinfer / avg_time_xattn_8
-        speedup_xattn_16 = avg_time_flashinfer / avg_time_xattn_16
-        speedup_minfer = avg_time_flashinfer / avg_time_minfer
+        print(f"{len}K Minfer {avg_time_minfer:.4f} flex: {avg_time_flex:.4f} xattn_8: {avg_time_xattn_8:.4f} xattn_16: {avg_time_xattn_16:.4f} full(fa): {avg_time_fa:.4f} ")
+        speedup_flex = avg_time_fa / avg_time_flex
+        speedup_xattn_8 = avg_time_fa / avg_time_xattn_8
+        speedup_xattn_16 = avg_time_fa / avg_time_xattn_16
+        speedup_minfer = avg_time_fa / avg_time_minfer
         speedups_flex.append(speedup_flex)
         speedups_xattn_8.append(speedup_xattn_8)
         speedups_xattn_16.append(speedup_xattn_16)
         speedups_minfer.append(speedup_minfer)
 
     # Output results
-    print(f"\n{'Length':<10}{'Flex Speedup':<15}{'Xattn 8 Speedup':<20}{'Xattn 16 Speedup':<25}{'Minfer Speedup'}")
-    for len, speedup_flex, speedup_xattn_8, speedup_xattn_16,speedup_minfer in zip(lens, speedups_flex, speedups_xattn_8, speedups_xattn_16, speedups_minfer):
-        print(f"{str(len):<10}{speedup_flex:<15.2f}{speedup_xattn_8:<20.2f}{speedup_xattn_16:<25.2f}{speedup_minfer:.2f}")
+    #print(f"\n{'Length':<10}{'Flex Speedup':<15}{'Xattn 8 Speedup':<20}{'Xattn 16 Speedup':<25}{'Minfer Speedup'}")
+    #for len, speedup_flex, speedup_xattn_8, speedup_xattn_16,speedup_minfer in zip(lens, speedups_flex, speedups_xattn_8, speedups_xattn_16, speedups_minfer):
+    #    print(f"{str(len):<10}{speedup_flex:<15.2f}{speedup_xattn_8:<20.2f}{speedup_xattn_16:<25.2f}{speedup_minfer:.2f}")
+    #print(f"\nMike:{'Length':<10}{'Xattn 8 Speedup':<30}{'Xattn 16 Speedup':<35}")
+    #for len, speedup_flex, speedup_xattn_8, speedup_xattn_16,speedup_minfer in zip(lens, speedups_flex, speedups_xattn_8, speedups_xattn_16, speedups_minfer):
+    #    l = str(len) + 'K'
+    #    print(f"{l:<10}{speedup_xattn_8:<30.2f}{speedup_xattn_16:<35.2f}")
+
+    # Header
+    print(f"\n{'Mike:':<10}{'Length':<10}{'Xattn 8 Speedup':<20}{'Xattn 16 Speedup':<20}")
+
+    # Data rows
+    for length, speedup_flex, speedup_xattn_8, speedup_xattn_16, speedup_minfer in zip(
+        lens, speedups_flex, speedups_xattn_8, speedups_xattn_16, speedups_minfer
+    ):
+        length_str = f"{length}K"
+        print(f"{'':<10}{length_str:<10}{speedup_xattn_8:<20.2f}{speedup_xattn_16:<20.2f}")

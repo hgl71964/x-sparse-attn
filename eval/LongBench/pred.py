@@ -20,9 +20,9 @@ from transformers.models.llama.modeling_llama import (
 )
 import math
 from xattn.src.Xattention import Xattention_prefill
-from xattn.src.Flexprefill import Flexprefill_prefill
-from xattn.src.Minference import Minference_prefill
-from flash_attn import flash_attn_func
+# from xattn.src.Flexprefill import Flexprefill_prefill
+# from xattn.src.Minference import Minference_prefill
+# from flash_attn import flash_attn_func
 import types
 from ratio import max_ratio, max
 
@@ -140,6 +140,7 @@ def new_attention_forward(
                 keep_recent=True,
             )
         elif self.method == "flex":
+            raise 
             attn_output = Flexprefill_prefill(
                 query_states.transpose(1, 2),
                 key_states.transpose(1, 2),
@@ -148,10 +149,12 @@ def new_attention_forward(
                 tau=0.1,
             ).transpose(1, 2)
         elif self.method == "minference":
+            raise 
             attn_output = Minference_prefill(
                 query_states, key_states, value_states
             )
         elif self.method == "full":
+            raise 
             attn_output = flash_attn_func(
                 query_states.transpose(1, 2),
                 key_states.transpose(1, 2),
