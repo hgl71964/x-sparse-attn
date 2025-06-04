@@ -127,6 +127,7 @@ if __name__ == "__main__":
         config = FastPrefillConfig(metric = "xattn",stride = 16)
         layer_to_save = 12
         if not os.path.exists(query_path) or not os.path.exists(key_path):
+            print(f'[NEW Q, K, V]')
             
             # model, tokenizer = load_fake_model(name_or_path="meta-llama/Llama-3.1-8B-Instruct", layer_to_save=layer_to_save, target_len=len*1024)
             model, tokenizer = load_fake_model(name_or_path=args.m, layer_to_save=layer_to_save, target_len=len*1024)
