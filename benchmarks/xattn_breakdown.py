@@ -101,6 +101,12 @@ def xattn_estimate(
     batch_size, num_q_head, q_len, head_dim = query_states.shape
     assert num_q_head == num_kv_head
 
+    # 
+    # the attn map is q_len x q_len
+    # then it is divided into [q_len // block_size, q_len // block_size] <- num of blocks
+    # then each block can be divided into [q_len // block_size // stride, q_len // block_size // stride] <- num of sub-blocks
+    # 
+
     k_num_to_pad = ((k_len + chunk_size - 1) // chunk_size) * chunk_size - k_len
     q_num_to_pad = ((q_len + chunk_size - 1) // chunk_size) * chunk_size - q_len
     k_chunk_num = (k_len + k_num_to_pad) // chunk_size
