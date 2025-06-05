@@ -26,9 +26,14 @@ def parse_args():
 
     # gradientai/Llama-3-8B-Instruct-Gradient-1048k
     # CohereLabs/aya-23-8B
-    # CohereLabs/c4ai-command-r7b-12-2 (not compatible type)
+    # CohereLabs/c4ai-command-r7b-12-2024 (need cohere's transformer, but still has problems)
     # mistralai/Mistral-7B-v0.1
+    # mistralai/Ministral-8B-Instruct-2410 (ok after fix)
+    # 
+    # deepseek-ai/DeepSeek-Prover-V2-7B (oom)
+    # 
     parser.add_argument("-m", type=str, default='CohereLabs/aya-23-8B')
+
     return parser.parse_args()
 
 
@@ -395,7 +400,7 @@ def Xattention_prefill(
         )
 
     num_iterations = 100
-    num_warmup = 10
+    num_warmup = 20
 
     cache = torch.empty(int(256e6), dtype=torch.int8, device='cuda')
 
@@ -449,6 +454,10 @@ def Xattention_prefill(
         value_states = value_states.to(query_states.device)
     if approx_simple_mask.device != query_states.device:
         approx_simple_mask = approx_simple_mask.to(query_states.device)
+    
+    # for hid in range(num_heads):
+    #     print(approx_simple_mask[0, hid, :, :].sum(), end=' ')
+    # print()
 
     ####################
     assert block_size == 128
@@ -537,17 +546,14 @@ def Xattention_prefill(
     #return attn_output
     return estimate_time, block_sparse_time
 
-
-
-if __name__ == "__main__":
-
+def main():
     lens = [4,8,16,32,64,128]
-    # lens = [8,32,64,128]
     args = parse_args()
     print(f'Model: {args.m}, Dataset: {args.d}')
 
     stride_8_time = []
     stride_16_time = []
+    max_cache_len = 150_000
 
     past_key_values = None
     for len in lens:
@@ -568,10 +574,15 @@ if __name__ == "__main__":
             input_ids = generate_prompt(tokenizer,len*1024, datasets=args.d)
             # print(input_ids.shape)
             chunk_size = 4096
+            # chunk_size = 1024
             if past_key_values is not None:
                 past_key_values.reset()
             else:
-                past_key_values = StaticCache(config=model.config, batch_size=1, max_cache_len=300000, device=model.device, dtype=model.dtype)
+                # XXX: normal transformers
+                past_key_values = StaticCache(config=model.config, batch_size=1, max_cache_len=max_cache_len, device=model.device, dtype=model.dtype)
+
+                # XXX: cohere transformers
+                # past_key_values = StaticCache(config=model.config, max_batch_size=1, max_cache_len=300000, device=model.device, dtype=model.dtype)
             with torch.no_grad():
                 # for i in tqdm(range(0, input_ids.size(1), chunk_size), desc="Prefilling", unit="chunk"):
                 for i in range(0, input_ids.size(1), chunk_size):
@@ -606,3 +617,7 @@ if __name__ == "__main__":
         et, bt = Xattention_prefill(q, k, v, stride=16, threshold=threshold, use_triton=True)
         et, bt = Xattention_prefill(q, k, v, stride=8, threshold=threshold, use_triton=True)
         print('*'*120)
+
+
+if __name__ == "__main__":
+    main()

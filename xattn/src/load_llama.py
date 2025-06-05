@@ -335,6 +335,14 @@ def forward_to_save(
         key_states = self.k_proj(hidden_states)
         value_states = self.v_proj(hidden_states)
 
+        # XXX hot fix for cohere's transformer, 
+        # try:
+        #     self.num_heads
+        # except:
+        #     print(f'[PATCH] cohere transformer')
+        #     self.num_heads = 32
+        #     self.num_key_value_heads = 8
+
         query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
         key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
         value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
@@ -386,7 +394,15 @@ def forward_to_save(
                 attn_output = Flexprefill_prefill(query_states.transpose(1, 2), key_states.transpose(1, 2), value_states.transpose(1, 2)).transpose(1, 2)
             elif self.fastprefillconfig.metric == "xattn":
                 if isinstance(self.fastprefillconfig.threshold, torch.Tensor):
-                    attn_output = Xattention_prefill(query_states, key_states, value_states, stride, norm=1, threshold=self.fastprefillconfig.threshold[self.layer_idx], use_triton=True)
+
+                    # attn_output = Xattention_prefill(query_states, key_states, value_states, stride, norm=1, threshold=self.fastprefillconfig.threshold[self.layer_idx], use_triton=True)
+
+                    # XXX if we use other models, the layer_idx > threshold.shape[0]
+                    if self.layer_idx < self.fastprefillconfig.threshold.shape[0]:
+                        attn_output = Xattention_prefill(query_states, key_states, value_states, stride, norm=1, threshold=self.fastprefillconfig.threshold[self.layer_idx], use_triton=True)
+                    else:
+                        attn_output = Xattention_prefill(query_states, key_states, value_states, stride, norm=1, threshold=0.96, use_triton=True)
+
                 else:
                     attn_output = Xattention_prefill(query_states, key_states, value_states, stride, norm=1, threshold=self.fastprefillconfig.threshold, use_triton=True)
             elif self.fastprefillconfig.metric == "full":
@@ -467,6 +483,7 @@ def load_fake_model(layer_to_save,target_len,name_or_path="", token=None):
             name_or_path,
             device_map="balanced", 
             torch_dtype=torch.bfloat16,
+            trust_remote_code=True,
         )
         #model = LlamaForCausalLM.from_pretrained(
         #    name_or_path,
@@ -486,6 +503,7 @@ def load_fake_model(layer_to_save,target_len,name_or_path="", token=None):
         )
     else:
         tokenizer = AutoTokenizer.from_pretrained(
-            name_or_path
+            name_or_path,
+            trust_remote_code=True,
         )
     return model, tokenizer
