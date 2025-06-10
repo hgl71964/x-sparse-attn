@@ -566,7 +566,6 @@ def main():
         print(f"Testing {len}K")
         query_path = f"output/query_{len*1024}.pkl"
         key_path = f"output/key_{len*1024}.pkl"
-        config = FastPrefillConfig(metric = "xattn",stride = 16)
         layer_to_save = 12
         if not os.path.exists(query_path) or not os.path.exists(key_path):
             print(f'[NEW Q, K, V]')
@@ -608,12 +607,9 @@ def main():
         assert(q.shape[-2] == len*1024)
         assert(k.shape[-2] == len*1024)
         torch.manual_seed(0)
-        # FlexPrefill args
-        gamma = 0.95
-        tau = 0.1
+
         # Xattention args
         threshold = torch.tensor(llama_fuse_8)[layer_to_save]
-        stride = 16
         v = torch.randn(q.shape, dtype=torch.bfloat16).to("cuda").contiguous()
         print(f"len :{len}K\n"
               f"q.shape: {q.shape}, {q.dtype}\n"

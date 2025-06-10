@@ -124,7 +124,6 @@ if __name__ == "__main__":
         print(f"Testing {len}K")
         query_path = f"output/query_{len*1024}.pkl"
         key_path = f"output/key_{len*1024}.pkl"
-        config = FastPrefillConfig(metric = "xattn",stride = 16)
         layer_to_save = 12
         if not os.path.exists(query_path) or not os.path.exists(key_path):
             print(f'[NEW Q, K, V]')
