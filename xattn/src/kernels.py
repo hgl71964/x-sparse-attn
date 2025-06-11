@@ -219,11 +219,13 @@ def flat_group_gemm_fuse_reshape_kernel(Q, K, Out,
     Q_ptrs = Q + batch_id * stride_qz + head_id * stride_qh + block_m * BLOCK_M * STRIDE * stride_qn
     K_ptrs = K + batch_id * stride_kz + head_id * stride_kh + block_n * BLOCK_N * STRIDE * stride_kn
 
+    # antidiagonal
     Q_ptrs = Q_ptrs + tl.arange(0, BLOCK_M)[:, None] * (stride_qn * STRIDE) + tl.arange(0, HEAD_DIM)[None, :] + stride_qn * (STRIDE - 1)
     K_ptrs = K_ptrs + tl.arange(0, BLOCK_N)[None, :] * (stride_kn * STRIDE) + tl.arange(0, HEAD_DIM)[:, None]
 
     o = tl.zeros([BLOCK_M, BLOCK_N], dtype=tl.float32)
 
+    # accu antidiagonal within a block (each block has STRIDE antidiagonal elements)
     for iter in range(STRIDE):
         q = tl.load(Q_ptrs - iter * stride_qn)
         k = tl.load(K_ptrs + iter * stride_kn)

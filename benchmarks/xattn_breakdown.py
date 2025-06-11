@@ -22,7 +22,7 @@ def parse_args():
 
     # NOTE: change of model or dataset need to `rm -rf output`
 
-    parser.add_argument("-d", type=str, default='longbench')
+    parser.add_argument("-d", type=str, default='default')
 
     # gradientai/Llama-3-8B-Instruct-Gradient-1048k
     # CohereLabs/aya-23-8B
