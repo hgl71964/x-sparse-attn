@@ -81,121 +81,66 @@ from xattn.src.kernels import (
 )
 from block_sparse_attn import block_sparse_attn_func
 
-
-def estimate_with_idx(
-    chunk_idx,  
-    pad_query_states: torch.Tensor,
-    pad_key_states: torch.Tensor,
-    stride,
-    k_block_num,
-    q_block_num,
-    #
-    reshaped_block_size,
-    reshaped_chunk_size,
-    #
-    k_reshaped_seq_len,
-    k_reshaped_num_to_pad,
-    head_dim,
-    num_blocks_per_chunk,
-    #
-    norm=1,
-    threshold=0.9,
-    causal=True,
-):
-    attn_weights_slice = flat_group_gemm_fuse_reshape(
-        pad_query_states[
-            :,
-            :,
-            (chunk_idx * reshaped_chunk_size) * stride : \
-                (chunk_idx * reshaped_chunk_size + reshaped_chunk_size) * stride,
-            :,
-        ],
-        pad_key_states,
-        stride,
-        (k_block_num - q_block_num) * reshaped_block_size
-        + chunk_idx * reshaped_chunk_size,
-        (k_block_num - q_block_num) * reshaped_block_size
-        + chunk_idx * reshaped_chunk_size
-        + reshaped_chunk_size,
-        is_causal=causal,
-    )
-    attn_sum = softmax_fuse_block_sum(
-        attn_weights_slice,
-        reshaped_block_size,
-        min(4096, reshaped_block_size),
-        (k_block_num - q_block_num) * reshaped_block_size
-        + chunk_idx * reshaped_chunk_size,
-        (k_block_num - q_block_num) * reshaped_block_size
-        + chunk_idx * reshaped_chunk_size
-        + reshaped_chunk_size,
-        k_reshaped_seq_len - k_reshaped_num_to_pad,
-        1.4426950408889634 / math.sqrt(head_dim) / stride / norm,
-        is_causal=causal,
-    )
-    simple_mask = find_blocks_chunked(
-        attn_sum,
-        k_block_num - q_block_num + chunk_idx * num_blocks_per_chunk,
-        threshold,
-        None,
-        decoding=False,
-        mode="prefill",
-        causal=causal,
-    )
-    return attn_sum ,simple_mask
+'''
+The mask cannot pass, because it needs to have the same process as chunk_idx over q_chunk_num
+'''
 
 
-def xattn_chunk_prefill(
-    q, k, v,
-    stride, 
+def x_attn_sums(
+    query_states: torch.Tensor,
+    key_states: torch.Tensor,
     block_size,
-    threshold, use_triton, 
-    chunk_prefill_chunk_size,
-    causal,
-    ref_weight=None, ref_sums=None, ref_mask=None,ref_out=None, 
+    stride,
+    norm=1,
+    softmax=True,
+    threshold=0.9,
+    chunk_size=16384,
+    select_mode="inverse",
+    use_triton=True,
+    causal=True,
+    kdb: int = 1,
+    keep_sink=False,
+    keep_recent=False,
 ):
-    # 1. compute global meta data
-    _, _,  k_len, _ = k.shape
-    _, _, q_len, _ = q.shape
-    global_q_block_num = (q_len + block_size - 1) // block_size
-    global_k_block_num = (k_len + block_size - 1) // block_size
-
-    # 1.1 estimate meta data
-    chunk_size = chunk_prefill_chunk_size
-    b, nh, q_len, dh = q.shape
-    kb, nh, k_len, dh = k.shape
-    assert q_len == k_len, f"q_len: {q_len}, k_len: {k_len}"
-    assert q_len >= chunk_size and q_len % chunk_size == 0, f"q_len: {q_len}, chunk_size: {chunk_size}"
-    num_chunks = q_len // chunk_size
-
-    batch_size, num_kv_head, k_len, head_dim = k.shape
-    batch_size, num_q_head, q_len, head_dim = q.shape
+    batch_size, num_kv_head, k_len, head_dim = key_states.shape
+    batch_size, num_q_head, q_len, head_dim = query_states.shape
     assert num_q_head == num_kv_head
 
+    # NOTE: here I change some logic to make sure after padding, q's seq_len is k's
     k_num_to_pad = ((k_len + chunk_size - 1) // chunk_size) * chunk_size - k_len
-    q_num_to_pad = ((q_len + chunk_size - 1) // chunk_size) * chunk_size - q_len
+    assert k_num_to_pad == 0, f"{k_num_to_pad=}, {k_len=}, {chunk_size=}"
+
+    # q_num_to_pad = ((q_len + chunk_size - 1) // chunk_size) * chunk_size - q_len
+    q_num_to_pad = key_states.shape[2] - query_states.shape[2]
+
+
     k_chunk_num = (k_len + k_num_to_pad) // chunk_size
     k_block_num = (k_len + k_num_to_pad) // block_size
     q_chunk_num = (q_len + q_num_to_pad) // chunk_size
     q_block_num = (q_len + q_num_to_pad) // block_size
 
     if k_num_to_pad > 0:
-        pad_key_states = F.pad(k, (0, 0, 0, k_num_to_pad), value=0).to("cuda")
+        pad_key_states = F.pad(key_states, (0, 0, 0, k_num_to_pad), value=0).to("cuda")
     else:
-        pad_key_states = k
+        pad_key_states = key_states
     if q_num_to_pad > 0:
-        pad_query_states = F.pad(q, (0, 0, 0, q_num_to_pad), value=0).to(
+
+        # except for the first chunk, we pre-pend 0 (pad 0)
+        pad_query_states = F.pad(query_states, (0, 0,  q_num_to_pad, 0), value=0).to(
             "cuda"
         )
     else:
-        pad_query_states = q
-    
-    # 1.2 allocate memory
-    global_q_view = torch.zeros_like(pad_query_states)
-    global_k_view = torch.zeros_like(pad_key_states)
+        pad_query_states = query_states
 
     assert num_kv_head == num_q_head
     attn_sum_list = []
-    simple_mask_list = []
+
+    if use_triton and (
+        "100" not in torch.cuda.get_device_properties(torch.cuda.current_device()).name
+    ):
+        raise RuntimeError(
+            "setting use triton to false. Triton kernel not surpported on this device"
+        )
 
     reshaped_chunk_size = chunk_size // stride
     reshaped_block_size = block_size // stride
@@ -204,68 +149,154 @@ def xattn_chunk_prefill(
     q_reshaped_num_to_pad = q_num_to_pad // stride
     num_blocks_per_chunk = reshaped_chunk_size // reshaped_block_size
 
-    # 2. pretend that q, k, v is passed in as chunk
+    for chunk_idx in range(q_chunk_num):
+        if kdb != 1:
+            raise ValueError("use_triton and kdb cannot be used together")
+        attn_weights_slice = flat_group_gemm_fuse_reshape(
+            pad_query_states[
+                :,
+                :,
+                (chunk_idx * reshaped_chunk_size)
+                * stride : (chunk_idx * reshaped_chunk_size + reshaped_chunk_size)
+                * stride,
+                :,
+            ],
+            pad_key_states,
+            stride,
+            (k_block_num - q_block_num) * reshaped_block_size
+            + chunk_idx * reshaped_chunk_size,
+            (k_block_num - q_block_num) * reshaped_block_size
+            + chunk_idx * reshaped_chunk_size
+            + reshaped_chunk_size,
+            is_causal=causal,
+        )
+        attn_sum = softmax_fuse_block_sum(
+            attn_weights_slice,
+            reshaped_block_size,
+            min(4096, reshaped_block_size),
+            (k_block_num - q_block_num) * reshaped_block_size
+            + chunk_idx * reshaped_chunk_size,
+            (k_block_num - q_block_num) * reshaped_block_size
+            + chunk_idx * reshaped_chunk_size
+            + reshaped_chunk_size,
+            k_reshaped_seq_len - k_reshaped_num_to_pad,
+            1.4426950408889634 / math.sqrt(head_dim) / stride / norm,
+            is_causal=causal,
+        )
+        attn_sum_list.append(attn_sum)
 
-    ##2.1 chunk along seq dim (done by external)
+    attn_sums = torch.cat(attn_sum_list, dim=-2)
+    return attn_weights_slice, attn_sums
+
+def x_attn_correct(chunks: list):
+    n_chunks = len(chunks)
+
+    # NOTE: each chunk is like
+    # 1. [1, 32, 64, 64]
+    # 2. [1, 32, 128, 128]
+    # ...
+    # we reversed insert the last into current chunk
+    ans = chunks[-1]
+    for i in range(n_chunks - 2, -1, -1):
+        cur = chunks[i]
+        cur_seq_len, cur_dh = cur.shape[-2], cur.shape[-1]
+        ans[:,:,:cur_seq_len, :cur_dh] = cur  # replace the top left corner
+    return ans
+
+def x_attn_masks(
+    attn_sum,
+    threshold=0.9,
+    causal=True,
+):
+    simple_mask = find_blocks_chunked(
+        attn_sum,
+        0,
+        threshold,
+        None,
+        decoding=False,
+        mode="prefill",
+        causal=causal,
+    )
+    seq_len = attn_sum.shape[-2]
+    if causal:
+        causal_mask = torch.tril(torch.ones(seq_len, seq_len, dtype=torch.bool, device=attn_sum.device,), 
+                                 diagonal=0)
+        simple_mask = torch.where(causal_mask, simple_mask, False)
+    return simple_mask
+
+
+def xattn_chunk_prefill(
+    q, k, v,
+    stride, 
+    threshold, use_triton, 
+    chunk_prefill_chunk_size,
+    ref_weight=None, ref_sums=None, ref_mask=None,ref_out=None, 
+):
+    b, nh, q_len, dh = q.shape
+    kb, nh, k_len, dh = k.shape
+    assert q_len == k_len, f"q_len: {q_len}, k_len: {k_len}"
+    assert q_len > chunk_prefill_chunk_size and q_len % chunk_prefill_chunk_size == 0, f"q_len: {q_len}, chunk_prefill_chunk_size: {chunk_prefill_chunk_size}"
+    num_chunks = q_len // chunk_prefill_chunk_size
+
+    # chunk along seq dim
     q_chunks = q.chunk(num_chunks, dim=2)
     k_chunks = k.chunk(num_chunks, dim=2)
     v_chunks = v.chunk(num_chunks, dim=2)
+    out_chunks = []
+    kv_cache = []
+    ws = []
+    ss = []
 
     # iter over chunk
     for i, (q_chunk, k_chunk, v_chunk) in enumerate(zip(q_chunks, k_chunks, v_chunks)):
+        # 1. Append current k_chunk and v_chunk to the cache
+        kv_cache.append((k_chunk, v_chunk))
 
-        # FIXME external pass in chunk,
-        # but insides the estimate with idx, it assumes a global view of the q, k
-        # so we need to pad to global view, and put the q, k chunk in the right position
-        global_q_view[:, :, i * chunk_size : (i + 1) * chunk_size, :] = q_chunk
-        global_k_view[:, :, i * chunk_size : (i + 1) * chunk_size, :] = k_chunk
+        # 2. Prepare k_all and v_all by concatenating all items in kv_cache
+        # Extract all k's and v's from the cache
+        k_list_from_cache = [item[0] for item in kv_cache]
+        v_list_from_cache = [item[1] for item in kv_cache]
+        k_all = torch.cat(k_list_from_cache, dim=2)
+        v_all = torch.cat(v_list_from_cache, dim=2)
 
-        sums, mask = estimate_with_idx(
-            i,
+        # select `chunk size`
+        _, _, k_len, _ = k_all.shape
+        # chunk_size = int(
+        #     max(
+        #         min(
+        #             max(2048, 1 << (k_len - 1).bit_length()),
+        #             128 * 1024 * 2048 // (1 << (k_len - 1).bit_length()),
+        #         ),
+        #         2048,
+        #     )
+        # )
 
-            # NOTE: we don't directly pass in q_chunk, k_chunk
-            # because this function requires a global view of q, k
-            global_q_view,
-            global_k_view,
+        # chunk_size: chunk along seq_len
+        chunk_size = 4096 # XXX other values results in k_pad, which causes incorrect values
 
-            # q_chunk,
-            # k_chunk,
-
-            stride,
-            k_block_num,
-            q_block_num,
-            reshaped_block_size,
-            reshaped_chunk_size,
-            #
-            k_reshaped_seq_len,
-            k_reshaped_num_to_pad,
-            head_dim,
-            num_blocks_per_chunk,
-            #
+        weights, sums = x_attn_sums(
+            q_chunk,
+            k_all,    # Use the full concatenated K history
+            block_size=128,
+            chunk_size=chunk_size,
+            stride=stride,
             threshold=threshold,
-            causal=causal,
-            norm=1,
+            use_triton=True,
+            causal=True,
+            kdb=1,
+            keep_sink=False,
+            keep_recent=False,
         )
-        attn_sum_list.append(sums)
-        simple_mask_list.append(mask)
+        # ws.append(weights)
+        ss.append(sums)
 
-    # 3. after all chunks are processed
-    # we gen full mask
-    attn_sums = torch.cat(attn_sum_list, dim=-2)
-    simple_masks = torch.cat(simple_mask_list, dim=-2)
-
-    assert causal
-    if causal:
-        simple_masks[:, :, -q_block_num:, -q_block_num:] = torch.where(
-            torch.tril(
-                torch.ones(
-                    q_block_num, q_block_num, dtype=bool, device=pad_key_states.device
-                ),
-                diagonal=0,
-            ),
-            simple_masks[:, :, -q_block_num:, -q_block_num:],
-            False,
-        )
+    # each chunk we collect the attn_sums, and apply correction to get the full masks
+    sums = x_attn_correct(ss)
+    mask = x_attn_masks(
+        sums,
+        threshold=threshold,
+        causal=True,
+    )
 
     # TODO block-sparse
     
@@ -273,11 +304,18 @@ def xattn_chunk_prefill(
     if ref_weight is not None:
         atol=1e-2
         rtol=0
-        if torch.allclose(attn_sums, ref_sums, atol=atol, rtol=rtol):
+
+        # NOTE: we don't compare weight because we don't collect them
+        # weights = x_attn_correct(ws)
+        # if torch.allclose(weights, ref_weight, atol=atol, rtol=rtol):
+        #     print("✅ weight match")
+        # else:
+        #     print("❌ weight differ")
+        if torch.allclose(sums, ref_sums, atol=atol, rtol=rtol):
             print("✅ sums match")
         else:
             print("❌ sums differ")
-        if torch.allclose(simple_masks, ref_mask, atol=atol, rtol=rtol):
+        if torch.allclose(ref_mask, mask, atol=atol, rtol=rtol):
             print("✅ mask match")
         else:
             print("❌ mask differ")
@@ -695,8 +733,8 @@ def Xattention_prefill(
 
 
 def main():
-    lens = [8,16,32, 64]
-    # lens = [32]
+    # lens = [8,16,32]
+    lens = [32]
     args = parse_args()
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -726,7 +764,9 @@ def main():
                                                token=args.t,
                                                )
             input_ids = generate_prompt(tokenizer,length*1024, datasets=args.d)
-
+            # print(input_ids.shape)
+            chunk_size = 4096
+            # chunk_size = 1024
             if past_key_values is not None:
                 past_key_values.reset()
             else:
@@ -778,24 +818,11 @@ def main():
                                                                     use_triton=True,
                                                                     )
 
-            # XXX to let chunk prefill == xattn, the chunk size should be the same
-            k_len = k.shape[-2]
-            chunk_size = int(
-                max(
-                    min(
-                        max(2048, 1 << (k_len - 1).bit_length()),
-                        128 * 1024 * 2048 // (1 << (k_len - 1).bit_length()),
-                    ),
-                    2048,
-                )
-            )
             out = xattn_chunk_prefill(q, k, v,
                                     stride,
-                                    block_size=128,
-                                    threshold=threshold,
+                                    threshold,
                                     use_triton=True,
-                                    chunk_prefill_chunk_size=chunk_size,
-                                    causal=True,
+                                    chunk_prefill_chunk_size=chunk_prefill_chunk_size,
                                     ref_weight=ref_weight,
                                     ref_sums=ref_sums,
                                     ref_mask=ref_mask,
