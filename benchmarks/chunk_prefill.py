@@ -14,8 +14,6 @@ import math
 import statistics
 import argparse
 
-# python benchmarks/xattn_breakdown.py -d default -m xx  > tmp.txt && sleep 1 && python benchmarks/format_breakdown.py
-
 def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seed", type=int, default=0)
@@ -213,9 +211,7 @@ def xattn_chunk_prefill(
 
     # iter over chunk
     for i, (q_chunk, k_chunk, v_chunk) in enumerate(zip(q_chunks, k_chunks, v_chunks)):
-
-        # FIXME external pass in chunk,
-        # but insides the estimate with idx, it assumes a global view of the q, k
+        # insides the estimate_with_idx, it assumes a global view of the q, k
         # so we need to pad to global view, and put the q, k chunk in the right position
         global_q_view[:, :, i * chunk_size : (i + 1) * chunk_size, :] = q_chunk
         global_k_view[:, :, i * chunk_size : (i + 1) * chunk_size, :] = k_chunk
@@ -225,9 +221,9 @@ def xattn_chunk_prefill(
 
             # NOTE: we don't directly pass in q_chunk, k_chunk
             # because this function requires a global view of q, k
+            # and it use the idx to slice the global q, k
             global_q_view,
             global_k_view,
-
             # q_chunk,
             # k_chunk,
 
@@ -778,7 +774,7 @@ def main():
                                                                     use_triton=True,
                                                                     )
 
-            # XXX to let chunk prefill == xattn, the chunk size should be the same
+            # XXX to let chunk prefill == xattn, the chunk size selection should be the same
             k_len = k.shape[-2]
             chunk_size = int(
                 max(
