@@ -378,7 +378,7 @@ def xattn_chunk_prefill(
     for t in time_list:
         print(f'{t:.2f}ms', end=', ') 
     print()
-    print(f'block sparse times: {block_sparse_time}')
+    print(f'block sparse times: {block_sparse_time:.2f}ms')
     return attn_output
 
 
