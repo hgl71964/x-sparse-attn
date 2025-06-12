@@ -867,13 +867,6 @@ def main():
 
         # for stride in [8, 16]:
         for stride in [16, 8]:
-            print('Stride: ', stride)
-            ref_out, ref_weight, ref_sums, ref_mask = Xattention_prefill(q, k, v, 
-                                                                    stride=stride, 
-                                                                    threshold=threshold, 
-                                                                    use_triton=True,
-                                                                    )
-
             # XXX to let chunk prefill == xattn, the chunk size selection should be the same
             k_len = k.shape[-2]
             chunk_size = int(
@@ -885,6 +878,14 @@ def main():
                     2048,
                 )
             )
+
+            print(f'Stride: {stride}, chunk_size: {chunk_size}')
+            ref_out, ref_weight, ref_sums, ref_mask = Xattention_prefill(q, k, v, 
+                                                                    stride=stride, 
+                                                                    threshold=threshold, 
+                                                                    use_triton=True,
+                                                                    )
+
             out = xattn_chunk_prefill(q, k, v,
                                     stride,
                                     block_size=128,
