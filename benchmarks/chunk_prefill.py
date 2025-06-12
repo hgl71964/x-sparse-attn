@@ -152,15 +152,13 @@ def xattn_chunk_prefill(
     ref_weight=None, ref_sums=None, ref_mask=None,ref_out=None, 
 ):
     # 1. compute global meta data
-    _, _,  k_len, _ = k.shape
-    _, _, q_len, _ = q.shape
-    global_q_block_num = (q_len + block_size - 1) // block_size
-    global_k_block_num = (k_len + block_size - 1) // block_size
+    _, num_heads,  k_len, _ = k.shape
+    _, num_heads, q_len, _ = q.shape
+    # global_q_block_num = (q_len + block_size - 1) // block_size
+    # global_k_block_num = (k_len + block_size - 1) // block_size
 
     # 1.1 estimate meta data
     chunk_size = chunk_prefill_chunk_size
-    b, nh, q_len, dh = q.shape
-    kb, nh, k_len, dh = k.shape
     assert q_len == k_len, f"q_len: {q_len}, k_len: {k_len}"
     assert q_len >= chunk_size and q_len % chunk_size == 0, f"q_len: {q_len}, chunk_size: {chunk_size}"
     num_chunks = q_len // chunk_size
@@ -190,6 +188,7 @@ def xattn_chunk_prefill(
     # 1.2 allocate memory
     global_q_view = torch.zeros_like(pad_query_states)
     global_k_view = torch.zeros_like(pad_key_states)
+    global_v_view = torch.zeros_like(pad_key_states)
 
     assert num_kv_head == num_q_head
     attn_sum_list = []
@@ -215,6 +214,7 @@ def xattn_chunk_prefill(
         # so we need to pad to global view, and put the q, k chunk in the right position
         global_q_view[:, :, i * chunk_size : (i + 1) * chunk_size, :] = q_chunk
         global_k_view[:, :, i * chunk_size : (i + 1) * chunk_size, :] = k_chunk
+        global_v_view[:, :, i * chunk_size : (i + 1) * chunk_size, :] = v_chunk
 
         sums, mask = estimate_with_idx(
             i,
@@ -263,7 +263,39 @@ def xattn_chunk_prefill(
             False,
         )
 
-    # TODO block-sparse
+    # 4. block-sparse
+    assert block_size == 128
+    assert batch_size == 1
+    global_q_view = global_q_view.transpose(1, 2).view(q_len, num_heads, head_dim)
+    global_k_view = global_k_view.transpose(1, 2).view(k_len, num_heads, head_dim)
+    global_v_view = global_v_view.transpose(1, 2).view(k_len, num_heads, head_dim)
+    q_cu_seq_lens = torch.tensor(
+        [0, q_len], dtype=torch.int32, device=global_q_view.device
+    )
+    k_cu_seq_lens = torch.tensor(
+        [0, k_len], dtype=torch.int32, device=global_q_view.device
+    )
+    head_mask_type = torch.tensor(
+        [1 for _ in range(num_heads)], device=global_q_view.device, dtype=torch.int32
+    )
+    attn_output = block_sparse_attn_func(
+        global_q_view,
+        global_k_view,
+        global_v_view,
+        q_cu_seq_lens,
+        k_cu_seq_lens,
+        head_mask_type,
+        None,
+        simple_masks[:, :, :q_block_num, :k_block_num].contiguous(),
+        q_len,
+        k_len,
+        p_dropout=0.0,
+        deterministic=True,
+        is_causal=causal,
+    )
+    attn_output = attn_output.view(batch_size, q_len, num_heads, head_dim).transpose(
+        1, 2
+    )
     
     # check if ref provided
     if ref_weight is not None:
@@ -277,7 +309,11 @@ def xattn_chunk_prefill(
             print("✅ mask match")
         else:
             print("❌ mask differ")
-    return 
+        if torch.allclose(attn_output, ref_out, atol=atol, rtol=rtol):
+            print("✅ attn out match")
+        else:
+            print("❌ attn out differ")
+    return attn_output
 
 
 # #################################
