@@ -727,8 +727,8 @@ def Xattention_prefill(
 
 
 def main():
-    lens = [8,16,32, 64]
-    # lens = [32]
+    # lens = [8,16,32, 64]
+    lens = [8]
     args = parse_args()
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -803,6 +803,7 @@ def main():
 
         # for stride in [8, 16]:
         for stride in [16, 8]:
+            print()
             print('Stride: ', stride)
             ref_out, ref_weight, ref_sums, ref_mask = Xattention_prefill(q, k, v, 
                                                                     stride=stride, 

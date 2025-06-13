@@ -37,3 +37,5 @@ cd ../../..
 
 # Below will benchmark speedup (XAttention only, FlexPrefill and MInference will not work with this build)
 python eval/efficiency/attention_speedup_flashattn.py 
+
+# to build CUDA extension: cd Block-Sparse-Attention && python setup.py build_ext --inplace
