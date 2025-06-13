@@ -4,7 +4,7 @@ rm -rf .venv
 uv venv .venv --seed --python 3.10
 source .venv/bin/activate
 uv pip install --upgrade pip
-uv pip install packaging ninja pytest
+uv pip install packaging ninja pytest wheel
 # uv pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
 # AS OF MAY 8TH, 2025, WE NEED TO USE TORCH 2.4 W/ CUDA 12.4 FOR FLASHINFER COMPATIBILITY
 uv pip install torch==2.4.0+cu124 torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124 
@@ -34,6 +34,7 @@ export PYTHONPATH="$PYTHONPATH:$(pwd)"
 cd ../../..
 
 # export PYTHONPATH=/root/repos/mike_x_attn:/root/repos/mike_x_attn/third-party/flash-attention/hopper
+# export PYTHONPATH=/root/repos/x-sparse-attn:/root/repos/x-sparse-attn/third-party/flash-attention/hopper
 
 # Below will benchmark speedup (XAttention only, FlexPrefill and MInference will not work with this build)
 python eval/efficiency/attention_speedup_flashattn.py 
