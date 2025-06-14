@@ -32,6 +32,10 @@ git submodule init
 git submodule update
 cd ./third-party/flash-attention/hopper
 python setup.py install
+
+# if change: python setup.py build_ext --inplace
+
+
 export PYTHONPATH="$PYTHONPATH:$(pwd)"
 cd ../../..
 

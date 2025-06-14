@@ -41,7 +41,7 @@ triton_attention = None
 DISABLE_BACKWARD = os.getenv("FLASH_ATTENTION_DISABLE_BACKWARD", "FALSE") == "TRUE"
 
 
-def time_fwd(func, *args, repeats=30, verbose=True, desc="", **kwargs):
+def time_fwd(func, *args, warmup=3, repeats=30, verbose=True, desc="", **kwargs):
     # # Warmup
     # for _ in range(5):
     #     func(*args, **kwargs)
@@ -59,7 +59,7 @@ def time_fwd(func, *args, repeats=30, verbose=True, desc="", **kwargs):
     # time_f = benchmark_forward(lambda: graph.replay(), repeats=repeats, verbose=verbose, desc=desc)
     # # return time_f[1].mean
     # return time_f[1]
-    return Timing(do_bench(lambda: func(*args, **kwargs), warmup=3, rep=repeats) * 1e-3)
+    return Timing(do_bench(lambda: func(*args, **kwargs), warmup=warmup, rep=repeats) * 1e-3)
 
 
 def flops(batch, nheads, seqlen_q, seqlen_k, headdim, headdim_v, causal=False, window_size=(-1, -1)):
@@ -216,7 +216,10 @@ def cudnn_spda_bwd_setup(q, k, v, o, g, lse, causal=False, window_size_left=-1):
 
 
 torch.manual_seed(0)
-repeats = 10
+
+warmup = 0
+repeats = 1
+
 dropout_p = 0.0
 causal = False
 dtype = torch.bfloat16
@@ -314,12 +317,10 @@ for headdim in [128]:
         for causal in [True]:
             print(f"\n### {headdim = }, {causal = }, {seqlen = } ###")
             if not varlen:
-                # m1 = time_fwd(flash_attn_func_v3, q, k if page_size is None else k_paged, v_fa3 if page_size is None else v_paged, cache_leftpad = leftpad_k, page_table=page_table, causal=causal, window_size=window_size, softcap=softcap, num_splits=num_splits, pack_gqa=pack_gqa, repeats=repeats, verbose=verbose, desc='Fav3')
-                m1 = time_fwd(flash_attn_func_v3, q, k if page_size is None else k_paged, v_fa3 if page_size is None else v_paged, qv=qv, causal=causal, window_size=window_size, softcap=softcap, num_splits=num_splits, pack_gqa=pack_gqa, repeats=repeats, verbose=verbose, desc='Fav3')
-                # pytorch_profiler(flash_attn_func_v3, q, k if page_size is None else k_paged, v_fa3 if page_size is None else v_paged, page_table=page_table, causal=causal, window_size=window_size, softcap=softcap, num_splits=num_splits, pack_gqa=pack_gqa)
+                out,_ = flash_attn_func_v3(q, k if page_size is None else k_paged, v_fa3 if page_size is None else v_paged, qv=qv, causal=causal, window_size=window_size, softcap=softcap, num_splits=num_splits, pack_gqa=pack_gqa,)
+                # m1 = time_fwd(flash_attn_func_v3, q, k if page_size is None else k_paged, v_fa3 if page_size is None else v_paged, qv=qv, causal=causal, window_size=window_size, softcap=softcap, num_splits=num_splits, pack_gqa=pack_gqa, warmup=warmup, repeats=repeats, verbose=verbose, desc='Fav3')
             else:
-                m1 = time_fwd(flash_attn_varlen_func_v3, q_unpad, k_unpad, v_unpad, cu_seqlens_q, cu_seqlens_k, seqlen_q, seqlen, causal=causal, window_size=window_size, softcap=softcap, num_splits=num_splits, pack_gqa=pack_gqa, repeats=repeats, verbose=verbose, desc='Fav3')
-                # pytorch_profiler(flash_attn_varlen_func_v3, q_unpad, k_unpad, v_unpad, cu_seqlens_q, cu_seqlens_k, seqlen_q, seqlen, causal=causal, window_size=window_size, softcap=softcap, num_splits=num_splits)
-            time_f[(causal, headdim, batch_size, seqlen), "Flash3"] = m1.mean
-
-            print(time_f)
+                # m1 = time_fwd(flash_attn_varlen_func_v3, q_unpad, k_unpad, v_unpad, cu_seqlens_q, cu_seqlens_k, seqlen_q, seqlen, causal=causal, window_size=window_size, softcap=softcap, num_splits=num_splits, pack_gqa=pack_gqa, warmup=warmup, repeats=repeats, verbose=verbose, desc='Fav3')
+                out,_ = flash_attn_varlen_func_v3( q_unpad, k_unpad, v_unpad, cu_seqlens_q, cu_seqlens_k, seqlen_q, seqlen, causal=causal, window_size=window_size, softcap=softcap, num_splits=num_splits, pack_gqa=pack_gqa,)
+            # time_f[(causal, headdim, batch_size, seqlen), "Flash3"] = m1.mean
+            print('out: ', out.shape)
