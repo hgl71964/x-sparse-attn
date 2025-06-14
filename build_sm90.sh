@@ -13,6 +13,8 @@ uv pip install transformers==4.46 accelerate
 # flashinfer build not working well with uv for some reason?
 pip install flashinfer -i https://flashinfer.ai/whl/cu124/torch2.4/ --verbose
 
+pip install datasets
+
 # Install xAttention
 uv pip install -e . --verbose --no-build-isolation
 
