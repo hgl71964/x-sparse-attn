@@ -14,10 +14,14 @@ import math
 import statistics
 import argparse
 
+import flash_attn_interface  # must be manually added to PYTHONPATH, see build_sm90.sh
+
 def parse_args():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--vv", action="store_true", help="verbose")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("-t", type=str, default=None)
+    parser.add_argument("--th", type=float, default=0.9, help="threshold for xattention.")
 
     # NOTE: change of model or dataset need to `rm -rf output`
 
@@ -783,17 +787,74 @@ def Xattention_prefill(
     attn_output = attn_output.view(batch_size, q_len, num_heads, head_dim).transpose(
         1, 2
     )
-
-    del query_states
-    num_to_compute = (k_block_num + 1) * k_block_num / 2 * num_heads
-    
+    # del query_states
+    # num_to_compute = (k_block_num + 1) * k_block_num / 2 * num_heads
     # print(f"approximated prefilling Computation: {approx_simple_mask.sum() / num_to_compute}")
     # del approx_simple_mask, 
     return attn_output, attn_weights_slice, attn_sums, approx_simple_mask
 
+def bench_fa(q, k, v, num_warmups, num_iterations, cache):
+    for i in range(num_warmups):
+        # bs, nhead, seqlen, headim -> (batch_size, seqlen, nheads, headdim)
+        flash_attn_interface.flash_attn_func(q.permute(0,2,1,3), k.permute(0,2,1,3), v.permute(0,2,1,3), softmax_scale=None, causal=True)
+
+    # For flash attention
+    # permute outside of timer
+    q_flash, k_flash, v_flash = q.permute(0,2,1,3), k.permute(0,2,1,3), v.permute(0,2,1,3)
+    torch.cuda.synchronize()
+
+    start_event = [torch.cuda.Event(enable_timing=True) for i in range(num_iterations)]
+    end_event = [torch.cuda.Event(enable_timing=True) for i in range(num_iterations)]
+    for i in range(num_iterations):
+        cache.zero_()
+        start_event[i].record()
+        o, softmax_lse = flash_attn_interface.flash_attn_func(q_flash, k_flash, v_flash, softmax_scale=None, causal=True)
+        end_event[i].record()
+    torch.cuda.synchronize()
+    times = [s.elapsed_time(e) for s, e in zip(start_event, end_event)]
+    avg_time_flash_attn = _summarize_statistics(times)
+
+    del o
+    del q_flash, k_flash, v_flash
+    gc.collect()
+    return avg_time_flash_attn
+
+def bench_xa(q, k, v, num_warmups, num_iterations, cache,
+
+            # xattn args
+            stride, threshold, chunk_size,
+            ):
+    for i in range(num_warmups):
+        # flash_attn_interface.flash_attn_func(q.permute(0,2,1,3), k.permute(0,2,1,3), v.permute(0,2,1,3), softmax_scale=None, causal=True)
+        pass
+
+    # For flash attention
+    # permute outside of timer
+    torch.cuda.synchronize()
+
+    start_event = [torch.cuda.Event(enable_timing=True) for i in range(num_iterations)]
+    end_event = [torch.cuda.Event(enable_timing=True) for i in range(num_iterations)]
+    for i in range(num_iterations):
+        cache.zero_()
+        start_event[i].record()
+        ref_out, ref_weight, ref_sums, ref_mask = Xattention_prefill(q, k, v, 
+                                                                stride=stride, 
+                                                                threshold=threshold, 
+                                                                use_triton=True,
+
+                                                                # unify chunk_size
+                                                                chunk_size=chunk_size,
+                                                                )
+        end_event[i].record()
+    torch.cuda.synchronize()
+    times = [s.elapsed_time(e) for s, e in zip(start_event, end_event)]
+    avg_time = _summarize_statistics(times)
+    gc.collect()
+    return avg_time
+
 
 def main():
-    lens = [8,16,32, 64]
+    lens = [8, 16, 32, 64]
     # lens = [32]
     args = parse_args()
     random.seed(args.seed)
@@ -801,10 +862,10 @@ def main():
     torch.manual_seed(args.seed)
 
     print(f'Model: {args.m}, Dataset: {args.d}')
-    max_cache_len = 80_000
+    max_cache_len = 2_000_000
     past_key_values = None
-
     device = torch.device("cuda:0")
+    chunk_size = 4096
 
     for length in lens:
         # 
@@ -814,6 +875,8 @@ def main():
         query_path = f"output/query_{length*1024}.pkl"
         key_path = f"output/key_{length*1024}.pkl"
         layer_to_save = 12
+
+
         if not os.path.exists(query_path) or not os.path.exists(key_path):
             print(f'[NEW Q, K, V]')
             
@@ -837,7 +900,6 @@ def main():
                 # past_key_values = StaticCache(config=model.config, max_batch_size=1, max_cache_len=300000, device=model.device, dtype=model.dtype)
             with torch.no_grad():
                 # for i in tqdm(range(0, input_ids.size(1), chunk_size), desc="Prefilling", unit="chunk"):
-                chunk_size = 4096
                 for i in range(0, input_ids.size(1), chunk_size):
                     chunk = input_ids[:, i: i + chunk_size]
                     # print(chunk.shape)
@@ -848,6 +910,9 @@ def main():
                         num_logits_to_keep=1,
                     )
                     past_key_values = output.past_key_values
+        # 
+        # BENCH
+        # 
         with open(query_path, "rb") as f:
             q = pickle.load(f)
         with open(key_path, "rb") as f:
@@ -856,58 +921,140 @@ def main():
         assert(k.shape[-2] == length*1024), f"k.shape[-2]: {k.shape[-2]}, length*1024: {length*1024}"
         torch.manual_seed(0)
 
-        # 
-        # Sparse-attn
-        #
-        # threshold = torch.tensor(llama_fuse_8)[layer_to_save]
-        threshold = 0.9 # NOTE: TUNE for model accuracy and speed
-
-        # 
         q = q.to(device)
         k = k.to(device)
         v = torch.randn(q.shape, dtype=torch.bfloat16).to(device).contiguous()
+
+        num_iterations = 100
+        num_warmup = 20
+        cache = torch.empty(int(256e6), dtype=torch.int8, device='cuda')
+
+        q_len = q.shape[-2]
+        num_chunks = q_len // chunk_size
+
         print(f"len :{length}K\n"
               f"q.shape: {q.shape}, {q.dtype}\n"
               f"k.shape: {k.shape}, {k.dtype}\n"
               f"v.shape: {v.shape}, {v.dtype}\n"
+              f'num_chunks: {num_chunks}\n'
         )
+
+        # 
+        # FA
+        # 
+        q_chunks = q.chunk(num_chunks, dim=2)
+        k_chunks = k.chunk(num_chunks, dim=2)
+        v_chunks = v.chunk(num_chunks, dim=2)
+        kv_cache = []
+
+        # iter over chunk
+        fa_times = []
+        for i, (q_chunk, k_chunk, v_chunk) in enumerate(zip(q_chunks, k_chunks, v_chunks)):
+            # 1. Append current k_chunk and v_chunk to the cache
+            kv_cache.append((k_chunk, v_chunk))
+
+            # 2. Prepare k_all and v_all by concatenating all items in kv_cache
+            # Extract all k's and v's from the cache
+            k_list_from_cache = [item[0] for item in kv_cache]
+            v_list_from_cache = [item[1] for item in kv_cache]
+            k_all = torch.cat(k_list_from_cache, dim=2)
+            v_all = torch.cat(v_list_from_cache, dim=2)
+
+            # TODO q_len != k_len just works? fa natively supports q_len != k_len?
+            fa_time = bench_fa(q_chunk, k_all, v_all, num_iterations, num_warmup, cache)
+            fa_times.append(fa_time)
+        if args.vv:
+            for i, fa_time in enumerate(fa_times):
+                print(f"FA chunk {i}: {fa_time:.2f}ms")
+
+        # 
+        # Sparse-attn
+        #
+        # threshold = torch.tensor(llama_fuse_8)[layer_to_save]
+        threshold = args.th # NOTE: TUNE for model accuracy and speed
+
+        x16_times = []
+        x8_times = []
 
         # for stride in [8, 16]:
         for stride in [16, 8]:
-            # XXX to let chunk prefill == xattn, the chunk size selection should be the same
-            k_len = k.shape[-2]
-            chunk_size = int(
-                max(
-                    min(
-                        max(2048, 1 << (k_len - 1).bit_length()),
-                        128 * 1024 * 2048 // (1 << (k_len - 1).bit_length()),
-                    ),
-                    2048,
-                )
-            )
+            print(f'Stride: {stride}, chunk_size: {chunk_size}, threshold: {threshold}')
+            q_chunks = q.chunk(num_chunks, dim=2)
+            k_chunks = k.chunk(num_chunks, dim=2)
+            v_chunks = v.chunk(num_chunks, dim=2)
+            kv_cache = []
 
-            print(f'Stride: {stride}, chunk_size: {chunk_size}')
-            ref_out, ref_weight, ref_sums, ref_mask = Xattention_prefill(q, k, v, 
-                                                                    stride=stride, 
-                                                                    threshold=threshold, 
-                                                                    use_triton=True,
-                                                                    )
+            # iter over chunk
+            for i, (q_chunk, k_chunk, v_chunk) in enumerate(zip(q_chunks, k_chunks, v_chunks)):
+                # 1. Append current k_chunk and v_chunk to the cache
+                kv_cache.append((k_chunk, v_chunk))
 
-            out = xattn_chunk_prefill(q, k, v,
-                                    stride,
-                                    block_size=128,
-                                    threshold=threshold,
-                                    use_triton=True,
-                                    chunk_prefill_chunk_size=chunk_size,
-                                    causal=True,
-                                    ref_weight=ref_weight,
-                                    ref_sums=ref_sums,
-                                    ref_mask=ref_mask,
-                                    ref_out=ref_out,
-                                )
+                # 2. Prepare k_all and v_all by concatenating all items in kv_cache
+                # Extract all k's and v's from the cache
+                k_list_from_cache = [item[0] for item in kv_cache]
+                v_list_from_cache = [item[1] for item in kv_cache]
+                k_all = torch.cat(k_list_from_cache, dim=2)
+                v_all = torch.cat(v_list_from_cache, dim=2)
 
+                xa_time = bench_xa(q_chunk, k_all, v_all, num_iterations, num_warmup, cache,
+                                   stride=stride, 
+                                   threshold=threshold, 
+                                   chunk_size=chunk_size,
+                                   )
+                if stride == 16:
+                    x16_times.append(xa_time)
+                elif stride == 8:
+                    x8_times.append(xa_time)
+            if args.vv:
+                for i, x16_time in enumerate(x16_times):
+                    print(f"X16 chunk {i}: {x16_time:.2f}ms")
+                for i, x8_time in enumerate(x8_times):
+                    print(f"X8 chunk {i}: {x8_time:.2f}ms")
+
+            # 
+            # VERIFY TODO one-shot should match sequential, but possible?
+            # 
+
+            # ref_out, ref_weight, ref_sums, ref_mask = Xattention_prefill(q, k, v, 
+            #                                                         stride=stride, 
+            #                                                         threshold=threshold, 
+            #                                                         use_triton=True,
+
+            #                                                         # unify chunk_size
+            #                                                         chunk_size=chunk_size,
+            #                                                         )
+
+            # q_chunks = q.chunk(num_chunks, dim=2)
+            # k_chunks = k.chunk(num_chunks, dim=2)
+            # v_chunks = v.chunk(num_chunks, dim=2)
+            # kv_cache = []
+
+            # # iter over chunk
+            # for i, (q_chunk, k_chunk, v_chunk) in enumerate(zip(q_chunks, k_chunks, v_chunks)):
+            #     # 1. Append current k_chunk and v_chunk to the cache
+            #     kv_cache.append((k_chunk, v_chunk))
+
+            #     # 2. Prepare k_all and v_all by concatenating all items in kv_cache
+            #     # Extract all k's and v's from the cache
+            #     k_list_from_cache = [item[0] for item in kv_cache]
+            #     v_list_from_cache = [item[1] for item in kv_cache]
+            #     k_all = torch.cat(k_list_from_cache, dim=2)
+            #     v_all = torch.cat(v_list_from_cache, dim=2)
+
+            #     chunk_out = xattn_chunk_prefill(q_chunk, k_all, v_all, 
+            #                                 stride,
+            #                                 block_size=128,
+            #                                 threshold=threshold,
+            #                                 use_triton=True,
+            #                                 chunk_prefill_chunk_size=chunk_size,
+            #                                 causal=True,
+            # )
+
+        fa = sum(fa_times) / len(fa_times)
+        x16 = sum(x16_times) / len(x16_times)
+        x8 = sum(x8_times) / len(x8_times)
+        print(f"FA: {fa:.2f}ms, X16: {x16:.2f}ms, X8: {x8:.2f}ms")
         print('*'*120)
-
         # break
 
 
