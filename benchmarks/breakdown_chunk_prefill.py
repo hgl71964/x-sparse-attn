@@ -193,6 +193,7 @@ def xattn_chunk_prefill(
     assert num_kv_head == num_q_head
     attn_sum_list = []
     simple_mask_list = []
+    time_list = []
 
     reshaped_chunk_size = chunk_size // stride
     reshaped_block_size = block_size // stride
@@ -208,6 +209,11 @@ def xattn_chunk_prefill(
     k_chunks = k.chunk(num_chunks, dim=2)
     v_chunks = v.chunk(num_chunks, dim=2)
 
+    # bench
+    num_iterations = 100
+    num_warmup = 20
+    cache = torch.empty(int(256e6), dtype=torch.int8, device='cuda')
+
     # iter over chunk
     for i, (q_chunk, k_chunk, v_chunk) in enumerate(zip(q_chunks, k_chunks, v_chunks)):
         # insides the estimate_with_idx, it assumes a global view of the q, k
@@ -216,34 +222,60 @@ def xattn_chunk_prefill(
         global_k_view[:, :, i * chunk_size : (i + 1) * chunk_size, :] = k_chunk
         global_v_view[:, :, i * chunk_size : (i + 1) * chunk_size, :] = v_chunk
 
-        sums, mask = estimate_with_idx(
-            i,
+        for _ in range(num_warmup):
+            estimate_with_idx(
+                i,
+                global_q_view,
+                global_k_view,
+                stride,
+                k_block_num,
+                q_block_num,
+                reshaped_block_size,
+                reshaped_chunk_size,
+                #
+                k_reshaped_seq_len,
+                k_reshaped_num_to_pad,
+                head_dim,
+                num_blocks_per_chunk,
+                #
+                threshold=threshold,
+                causal=causal,
+                norm=1,
+            )
+        torch.cuda.synchronize()
+        start_event = [torch.cuda.Event(enable_timing=True) for _ in range(num_iterations)]
+        end_event = [torch.cuda.Event(enable_timing=True) for _ in range(num_iterations)]
 
-            # NOTE: we don't directly pass in q_chunk, k_chunk
-            # because this function requires a global view of q, k
-            # and it use the idx to slice the global q, k
-            global_q_view,
-            global_k_view,
-            # q_chunk,
-            # k_chunk,
+        for j in range(num_iterations):
+            cache.zero_()
+            start_event[j].record()
+            sums, mask = estimate_with_idx(
+                i,
+                global_q_view,
+                global_k_view,
+                stride,
+                k_block_num,
+                q_block_num,
+                reshaped_block_size,
+                reshaped_chunk_size,
+                #
+                k_reshaped_seq_len,
+                k_reshaped_num_to_pad,
+                head_dim,
+                num_blocks_per_chunk,
+                #
+                threshold=threshold,
+                causal=causal,
+                norm=1,
+            )
+            end_event[j].record()
+        torch.cuda.synchronize()
+        times = [s.elapsed_time(e) for s, e in zip(start_event, end_event)]
+        estimate_time = _summarize_statistics(times)
 
-            stride,
-            k_block_num,
-            q_block_num,
-            reshaped_block_size,
-            reshaped_chunk_size,
-            #
-            k_reshaped_seq_len,
-            k_reshaped_num_to_pad,
-            head_dim,
-            num_blocks_per_chunk,
-            #
-            threshold=threshold,
-            causal=causal,
-            norm=1,
-        )
         attn_sum_list.append(sums)
         simple_mask_list.append(mask)
+        time_list.append(estimate_time)
 
     # 3. after all chunks are processed
     # we gen full mask
@@ -278,24 +310,53 @@ def xattn_chunk_prefill(
     head_mask_type = torch.tensor(
         [1 for _ in range(num_heads)], device=global_q_view.device, dtype=torch.int32
     )
-    attn_output = block_sparse_attn_func(
-        global_q_view,
-        global_k_view,
-        global_v_view,
-        q_cu_seq_lens,
-        k_cu_seq_lens,
-        head_mask_type,
-        None,
-        simple_masks[:, :, :q_block_num, :k_block_num].contiguous(),
-        q_len,
-        k_len,
-        p_dropout=0.0,
-        deterministic=True,
-        is_causal=causal,
-    )
+
+    for _ in range(num_warmup):
+        attn_output = block_sparse_attn_func(
+            global_q_view,
+            global_k_view,
+            global_v_view,
+            q_cu_seq_lens,
+            k_cu_seq_lens,
+            head_mask_type,
+            None,
+            simple_masks[:, :, :q_block_num, :k_block_num].contiguous(),
+            q_len,
+            k_len,
+            p_dropout=0.0,
+            deterministic=True,
+            is_causal=causal,
+        )
+    torch.cuda.synchronize()
+    start_event = [torch.cuda.Event(enable_timing=True) for _ in range(num_iterations)]
+    end_event = [torch.cuda.Event(enable_timing=True) for _ in range(num_iterations)]
+
+    for j in range(num_iterations):
+        cache.zero_()
+        start_event[j].record()
+        attn_output = block_sparse_attn_func(
+            global_q_view,
+            global_k_view,
+            global_v_view,
+            q_cu_seq_lens,
+            k_cu_seq_lens,
+            head_mask_type,
+            None,
+            simple_masks[:, :, :q_block_num, :k_block_num].contiguous(),
+            q_len,
+            k_len,
+            p_dropout=0.0,
+            deterministic=True,
+            is_causal=causal,
+        )
+        end_event[j].record()
+    torch.cuda.synchronize()
+    times = [s.elapsed_time(e) for s, e in zip(start_event, end_event)]
+    block_sparse_time = _summarize_statistics(times)
     attn_output = attn_output.view(batch_size, q_len, num_heads, head_dim).transpose(
         1, 2
     )
+
     
     # check if ref provided
     if ref_weight is not None:
@@ -313,6 +374,11 @@ def xattn_chunk_prefill(
             print("✅ attn out match")
         else:
             print("❌ attn out differ")
+    print(f'dynamic mask times: ')
+    for t in time_list:
+        print(f'{t:.2f}ms', end=', ') 
+    print()
+    print(f'block sparse times: {block_sparse_time:.2f}ms')
     return attn_output
 
 
@@ -727,18 +793,18 @@ def Xattention_prefill(
 
 
 def main():
-    # lens = [8,16,32, 64]
-    lens = [8]
+    lens = [8,16,32, 64]
+    # lens = [32]
     args = parse_args()
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
     print(f'Model: {args.m}, Dataset: {args.d}')
-
-    chunk_prefill_chunk_size = 4096
     max_cache_len = 80_000
     past_key_values = None
+
+    device = torch.device("cuda:0")
 
     for length in lens:
         # 
@@ -758,6 +824,8 @@ def main():
                                                token=args.t,
                                                )
             input_ids = generate_prompt(tokenizer,length*1024, datasets=args.d)
+            model = model.to(device)
+            input_ids = input_ids.to(device)
 
             if past_key_values is not None:
                 past_key_values.reset()
@@ -769,6 +837,7 @@ def main():
                 # past_key_values = StaticCache(config=model.config, max_batch_size=1, max_cache_len=300000, device=model.device, dtype=model.dtype)
             with torch.no_grad():
                 # for i in tqdm(range(0, input_ids.size(1), chunk_size), desc="Prefilling", unit="chunk"):
+                chunk_size = 4096
                 for i in range(0, input_ids.size(1), chunk_size):
                     chunk = input_ids[:, i: i + chunk_size]
                     # print(chunk.shape)
@@ -794,7 +863,9 @@ def main():
         threshold = 0.9 # NOTE: TUNE for model accuracy and speed
 
         # 
-        v = torch.randn(q.shape, dtype=torch.bfloat16).to("cuda").contiguous()
+        q = q.to(device)
+        k = k.to(device)
+        v = torch.randn(q.shape, dtype=torch.bfloat16).to(device).contiguous()
         print(f"len :{length}K\n"
               f"q.shape: {q.shape}, {q.dtype}\n"
               f"k.shape: {k.shape}, {k.dtype}\n"
@@ -803,14 +874,6 @@ def main():
 
         # for stride in [8, 16]:
         for stride in [16, 8]:
-            print()
-            print('Stride: ', stride)
-            ref_out, ref_weight, ref_sums, ref_mask = Xattention_prefill(q, k, v, 
-                                                                    stride=stride, 
-                                                                    threshold=threshold, 
-                                                                    use_triton=True,
-                                                                    )
-
             # XXX to let chunk prefill == xattn, the chunk size selection should be the same
             k_len = k.shape[-2]
             chunk_size = int(
@@ -822,6 +885,14 @@ def main():
                     2048,
                 )
             )
+
+            print(f'Stride: {stride}, chunk_size: {chunk_size}')
+            ref_out, ref_weight, ref_sums, ref_mask = Xattention_prefill(q, k, v, 
+                                                                    stride=stride, 
+                                                                    threshold=threshold, 
+                                                                    use_triton=True,
+                                                                    )
+
             out = xattn_chunk_prefill(q, k, v,
                                     stride,
                                     block_size=128,

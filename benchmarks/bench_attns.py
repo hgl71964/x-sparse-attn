@@ -114,6 +114,7 @@ if __name__ == "__main__":
     lens = [4,8,16,32,64,128]
     args = parse_args()
     print(f'Model: {args.m}, Dataset: {args.d}')
+    device = torch.device("cuda:0")
 
     speedups_flex = []
     speedups_xattn_8 = []
@@ -131,12 +132,14 @@ if __name__ == "__main__":
             # model, tokenizer = load_fake_model(name_or_path="meta-llama/Llama-3.1-8B-Instruct", layer_to_save=layer_to_save, target_len=len*1024)
             model, tokenizer = load_fake_model(name_or_path=args.m, layer_to_save=layer_to_save, target_len=len*1024)
             input_ids = generate_prompt(tokenizer,len*1024, datasets=args.d)
-            chunk_size = 4096
+            model = model.to(device)
+            input_ids = input_ids.to(device)
             if past_key_values is not None:
                 past_key_values.reset()
             else:
                 past_key_values = StaticCache(config=model.config, batch_size=1, max_cache_len=300000, device=model.device, dtype=model.dtype)
             with torch.no_grad():
+                chunk_size = 4096
                 for i in tqdm(range(0, input_ids.size(1), chunk_size), desc="Prefilling", unit="chunk"):
                     chunk = input_ids[:, i: i + chunk_size]
                     output = model(
@@ -153,11 +156,14 @@ if __name__ == "__main__":
         assert(q.shape[-2] == len*1024)
         assert(k.shape[-2] == len*1024)
         torch.manual_seed(0)
+
         # FlexPrefill args
         gamma = 0.95
         tau = 0.1
         # Xattention args
-        threshold = torch.tensor(llama_fuse_8)[layer_to_save]
+        # threshold = torch.tensor(llama_fuse_8)[layer_to_save]
+        threshold = 0.9 # NOTE: TUNE for model accuracy and speed
+
         stride = 16
         v = torch.randn(q.shape, dtype=torch.bfloat16).to("cuda").contiguous()
         num_iterations = 100

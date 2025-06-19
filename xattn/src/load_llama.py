@@ -474,14 +474,14 @@ def load_fake_model(layer_to_save,target_len,name_or_path="", token=None):
     if token is not None:
         model = AutoModelForCausalLM.from_pretrained(
             name_or_path,
-            device_map="balanced", 
+            # device_map="balanced", 
             torch_dtype=torch.bfloat16,
             use_auth_token=token,
         )
     else:
         model = AutoModelForCausalLM.from_pretrained(
             name_or_path,
-            device_map="balanced", 
+            # device_map="balanced", 
             torch_dtype=torch.bfloat16,
             trust_remote_code=True,
         )

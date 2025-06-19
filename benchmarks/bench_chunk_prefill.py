@@ -804,6 +804,8 @@ def main():
     max_cache_len = 80_000
     past_key_values = None
 
+    device = torch.device("cuda:0")
+
     for length in lens:
         # 
         # GEN
@@ -822,6 +824,8 @@ def main():
                                                token=args.t,
                                                )
             input_ids = generate_prompt(tokenizer,length*1024, datasets=args.d)
+            model = model.to(device)
+            input_ids = input_ids.to(device)
 
             if past_key_values is not None:
                 past_key_values.reset()
@@ -833,6 +837,7 @@ def main():
                 # past_key_values = StaticCache(config=model.config, max_batch_size=1, max_cache_len=300000, device=model.device, dtype=model.dtype)
             with torch.no_grad():
                 # for i in tqdm(range(0, input_ids.size(1), chunk_size), desc="Prefilling", unit="chunk"):
+                chunk_size = 4096
                 for i in range(0, input_ids.size(1), chunk_size):
                     chunk = input_ids[:, i: i + chunk_size]
                     # print(chunk.shape)
@@ -858,7 +863,9 @@ def main():
         threshold = 0.9 # NOTE: TUNE for model accuracy and speed
 
         # 
-        v = torch.randn(q.shape, dtype=torch.bfloat16).to("cuda").contiguous()
+        q = q.to(device)
+        k = k.to(device)
+        v = torch.randn(q.shape, dtype=torch.bfloat16).to(device).contiguous()
         print(f"len :{length}K\n"
               f"q.shape: {q.shape}, {q.dtype}\n"
               f"k.shape: {k.shape}, {k.dtype}\n"
