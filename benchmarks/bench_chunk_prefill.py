@@ -820,13 +820,18 @@ def bench_fa(q, k, v, num_warmups, num_iterations, cache):
     return avg_time_flash_attn
 
 def bench_xa(q, k, v, num_warmups, num_iterations, cache,
-
             # xattn args
             stride, threshold, chunk_size,
             ):
     for i in range(num_warmups):
-        # flash_attn_interface.flash_attn_func(q.permute(0,2,1,3), k.permute(0,2,1,3), v.permute(0,2,1,3), softmax_scale=None, causal=True)
-        pass
+        Xattention_prefill(q, k, v, 
+                        stride=stride, 
+                        threshold=threshold, 
+                        use_triton=True,
+
+                        # unify chunk_size
+                        chunk_size=chunk_size,
+                        )
 
     # For flash attention
     # permute outside of timer
