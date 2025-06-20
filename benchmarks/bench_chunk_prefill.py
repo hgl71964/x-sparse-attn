@@ -813,7 +813,7 @@ def Xattention_prefill(
     # num_to_compute = (k_block_num + 1) * k_block_num / 2 * num_heads
     # print(f"approximated prefilling Computation: {approx_simple_mask.sum() / num_to_compute}")
     # del approx_simple_mask,
-    return attn_output, attn_weights_slice, attn_sums, approx_simple_mask
+    return attn_output, attn_weights_slice, attn_sums, approx_simple_mask, k_block_num, num_heads
 
 
 def bench_fa(q, k, v, num_warmups, num_iterations, cache):
@@ -889,7 +889,7 @@ def bench_xa(
     for i in range(num_iterations):
         cache.zero_()
         start_event[i].record()
-        ref_out, ref_weight, ref_sums, ref_mask = Xattention_prefill(
+        ref_out, ref_weight, ref_sums, ref_mask, k_block_num, num_heads = Xattention_prefill(
             q,
             k,
             v,
@@ -905,6 +905,8 @@ def bench_xa(
     times = [s.elapsed_time(e) for s, e in zip(start_event, end_event)]
     avg_time = _summarize_statistics(times)
     gc.collect()
+    # num_to_compute = (k_block_num + 1) * k_block_num / 2 * num_heads
+    # print(f"{i}-th density: {ref_mask.sum() / num_to_compute:.3f}")
     return avg_time
 
 
@@ -1042,8 +1044,8 @@ def main():
         #
         # Sparse-attn
         # ### NOTE: TUNE for model accuracy and speed
-        threshold = torch.tensor(llama_fuse_8)[layer_to_save]
-        # threshold = args.th 
+        # threshold = torch.tensor(llama_fuse_8)[layer_to_save]
+        threshold = args.th 
 
         x16_times = []
         x8_times = []
@@ -1072,7 +1074,7 @@ def main():
                 v_all = torch.cat(v_list_from_cache, dim=2)
 
                 if args.just_run:
-                    ref_out, ref_weight, ref_sums, ref_mask = Xattention_prefill(
+                    ref_out, ref_weight, ref_sums, ref_mask, k_block_num, num_heads = Xattention_prefill(
                         q_chunk, k_all, v_all, #
                         stride=stride,
                         threshold=threshold,
@@ -1080,6 +1082,8 @@ def main():
                         # unify chunk_size
                         chunk_size=chunk_size,
                     )
+                    num_to_compute = (k_block_num + 1) * k_block_num / 2 * num_heads
+                    print(f"{i}-th density: {ref_mask.sum() / num_to_compute:.3f}")
                 else:
                     # bench
                     xa_time = bench_xa(
