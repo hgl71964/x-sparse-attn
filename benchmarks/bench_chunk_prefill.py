@@ -909,17 +909,15 @@ def bench_xa(
 
 def main():
     args = parse_args()
-    lens = [8, 16, 32, 64]
-    # lens = [32]
+    # lens = [8, 16, 32, 64]
+    lens = [512, 1024]
     if args.full:
-        lens = [8, 16, 32, 64, 128, 256, 512, 1024]
+        lens = [8, 16, 32, 64, 128, 256, 512, 768,] #1024]
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
     print(f'Model: {args.m}, Dataset: {args.d}, context length: {lens}')
-    max_cache_len = 2_000_000
-    past_key_values = None
     device = torch.device("cuda:0")
     chunk_size = 4096
 
@@ -934,6 +932,8 @@ def main():
 
         if not os.path.exists(query_path) or not os.path.exists(key_path):
             print(f'[NEW Q, K, V]')
+            past_key_values = None # we always allocate new one for new length
+            torch.cuda.empty_cache()
 
             # model, tokenizer = load_fake_model(name_or_path="meta-llama/Llama-3.1-8B-Instruct", layer_to_save=layer_to_save, target_len=len*1024)
             model, tokenizer = load_fake_model(
@@ -941,10 +941,12 @@ def main():
                 layer_to_save=layer_to_save,
                 target_len=length * 1024,
                 token=args.t,
+                cut=True, # only use first layer
             )
             input_ids = generate_prompt(tokenizer,
                                         length * 1024,
-                                        datasets=args.d)
+                                        datasets=args.d,
+                                    )
             model = model.to(device)
             input_ids = input_ids.to(device)
 
@@ -955,13 +957,13 @@ def main():
                 past_key_values = StaticCache(
                     config=model.config,
                     batch_size=1,
-                    max_cache_len=max_cache_len,
+                    max_cache_len=length * 1024,
                     device=model.device,
                     dtype=model.dtype,
                 )
 
-                # XXX: cohere transformers
-                # past_key_values = StaticCache(config=model.config, max_batch_size=1, max_cache_len=300000, device=model.device, dtype=model.dtype)
+            # XXX: cohere transformers
+            # past_key_values = StaticCache(config=model.config, max_batch_size=1, max_cache_len=300000, device=model.device, dtype=model.dtype)
             with torch.no_grad():
                 # for i in tqdm(range(0, input_ids.size(1), chunk_size), desc="Prefilling", unit="chunk"):
                 for i in range(0, input_ids.size(1), chunk_size):
@@ -974,6 +976,10 @@ def main():
                         num_logits_to_keep=1,
                     )
                     past_key_values = output.past_key_values
+        # discard kv cache
+        past_key_values = None 
+        torch.cuda.empty_cache()
+
         #
         # BENCH
         #
@@ -987,7 +993,6 @@ def main():
         assert (
             k.shape[-2] == length *
             1024), f"k.shape[-2]: {k.shape[-2]}, length*1024: {length*1024}"
-        torch.manual_seed(0)
 
         q = q.to(device)
         k = k.to(device)
@@ -1005,7 +1010,6 @@ def main():
               f"k.shape: {k.shape}, {k.dtype}\n"
               f"v.shape: {v.shape}, {v.dtype}\n"
               f'num_chunks: {num_chunks}\n')
-
         #
         # FA
         #
@@ -1068,6 +1072,7 @@ def main():
                 k_all = torch.cat(k_list_from_cache, dim=2)
                 v_all = torch.cat(v_list_from_cache, dim=2)
 
+                # TODO when q_len!=k_len, the padding Q direction is wrong?? 
                 xa_time = bench_xa(
                     q_chunk,
                     k_all,

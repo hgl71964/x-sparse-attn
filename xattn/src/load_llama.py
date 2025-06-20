@@ -468,7 +468,7 @@ def forward_to_save(
 
         return attn_output, None, past_key_value
 
-def load_fake_model(layer_to_save,target_len,name_or_path="", token=None):
+def load_fake_model(layer_to_save,target_len,name_or_path="", token=None, cut=False):
     from transformers import AutoTokenizer, AutoModelForCausalLM
 
     if token is not None:
@@ -490,12 +490,21 @@ def load_fake_model(layer_to_save,target_len,name_or_path="", token=None):
         #    device_map="balanced", 
         #    torch_dtype=torch.bfloat16,
         #)
+
+    if cut:
+        # for > 512k context, we only use the first layer
+        model.model.layers = model.model.layers[:1]
+        layer_to_save = 0
+        model.config.num_hidden_layers = 1
+    
+
     model.eval()
     for layer in model.model.layers:
         layer.self_attn.fastprefillconfig = FastPrefillConfig()
         layer.self_attn.layer_to_save = layer_to_save
         layer.self_attn.target_len = target_len
         layer.self_attn.forward = forward_to_save.__get__(layer.self_attn)
+
     if token is not None:
         tokenizer = AutoTokenizer.from_pretrained(
             name_or_path,
