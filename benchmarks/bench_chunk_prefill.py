@@ -21,6 +21,7 @@ def parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--vv", action="store_true", help="verbose")
     parser.add_argument("--full", action="store_true")
+    parser.add_argument("--just_run", action="store_true", help='just_run xattn chunk-prefill')
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("-t", type=str, default=None)
     parser.add_argument("--th",
@@ -450,6 +451,9 @@ def xattn_estimate(
     k_block_num = (k_len + k_num_to_pad) // block_size
     q_chunk_num = (q_len + q_num_to_pad) // chunk_size
     q_block_num = (q_len + q_num_to_pad) // block_size
+
+    # TODO when q_len!=k_len, the padding Q direction is wrong?? 
+    assert q_num_to_pad == 0, f'make sure no padding here, e.g. {q_len}=={chunk_size} should be true'
 
     if k_num_to_pad > 0:
         pad_key_states = F.pad(key_states, (0, 0, 0, k_num_to_pad),
@@ -1028,8 +1032,6 @@ def main():
             v_list_from_cache = [item[1] for item in kv_cache]
             k_all = torch.cat(k_list_from_cache, dim=2)
             v_all = torch.cat(v_list_from_cache, dim=2)
-
-            # TODO q_len != k_len just works? fa natively supports q_len != k_len?
             fa_time = bench_fa(q_chunk, k_all, v_all, num_iterations,
                                num_warmup, cache)
             fa_times.append(fa_time)
@@ -1069,22 +1071,32 @@ def main():
                 k_all = torch.cat(k_list_from_cache, dim=2)
                 v_all = torch.cat(v_list_from_cache, dim=2)
 
-                # TODO when q_len!=k_len, the padding Q direction is wrong?? 
-                xa_time = bench_xa(
-                    q_chunk,
-                    k_all,
-                    v_all,
-                    num_iterations,
-                    num_warmup,
-                    cache,
-                    stride=stride,
-                    threshold=threshold,
-                    chunk_size=chunk_size,
-                )
-                if stride == 16:
-                    x16_times.append(xa_time)
-                elif stride == 8:
-                    x8_times.append(xa_time)
+                if args.just_run:
+                    ref_out, ref_weight, ref_sums, ref_mask = Xattention_prefill(
+                        q_chunk, k_all, v_all, #
+                        stride=stride,
+                        threshold=threshold,
+                        use_triton=True,
+                        # unify chunk_size
+                        chunk_size=chunk_size,
+                    )
+                else:
+                    # bench
+                    xa_time = bench_xa(
+                        q_chunk,
+                        k_all,
+                        v_all,
+                        num_iterations,
+                        num_warmup,
+                        cache,
+                        stride=stride,
+                        threshold=threshold,
+                        chunk_size=chunk_size,
+                    )
+                    if stride == 16:
+                        x16_times.append(xa_time)
+                    elif stride == 8:
+                        x8_times.append(xa_time)
         if args.vv:
             for i, x16_time in enumerate(x16_times):
                 print(f"X16 chunk {i}: {x16_time:.2f}ms")
@@ -1131,8 +1143,8 @@ def main():
             # )
 
         fa = sum(fa_times) / len(fa_times)
-        x16 = sum(x16_times) / len(x16_times)
-        x8 = sum(x8_times) / len(x8_times)
+        x16 = sum(x16_times) / len(x16_times) if len(x16_times) > 0 else 0
+        x8 = sum(x8_times) / len(x8_times) if len(x8_times) > 0 else 0
         print(f"avgLatency: FA: {fa:.2f}ms, X16: {x16:.2f}ms, X8: {x8:.2f}ms")
         print('*' * 120)
         # break
