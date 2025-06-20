@@ -72,7 +72,7 @@ import argparse
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("-d", type=str, default='longbench')
+    parser.add_argument("-d", type=str, default='default')
     parser.add_argument("-m", type=str, default='gradientai/Llama-3-8B-Instruct-Gradient-1048k')
     return parser.parse_args()
 
@@ -137,7 +137,7 @@ if __name__ == "__main__":
             if past_key_values is not None:
                 past_key_values.reset()
             else:
-                past_key_values = StaticCache(config=model.config, batch_size=1, max_cache_len=300000, device=model.device, dtype=model.dtype)
+                past_key_values = StaticCache(config=model.config, batch_size=1, max_cache_len=300_000, device=model.device, dtype=model.dtype)
             with torch.no_grad():
                 chunk_size = 4096
                 for i in tqdm(range(0, input_ids.size(1), chunk_size), desc="Prefilling", unit="chunk"):
@@ -160,9 +160,10 @@ if __name__ == "__main__":
         # FlexPrefill args
         gamma = 0.95
         tau = 0.1
-        # Xattention args
-        # threshold = torch.tensor(llama_fuse_8)[layer_to_save]
-        threshold = 0.9 # NOTE: TUNE for model accuracy and speed
+
+        # Xattention args ## NOTE: TUNE for model accuracy and speed
+        threshold = torch.tensor(llama_fuse_8)[layer_to_save]
+        # threshold = 0.9 
 
         stride = 16
         v = torch.randn(q.shape, dtype=torch.bfloat16).to("cuda").contiguous()

@@ -874,9 +874,6 @@ def bench_xa(
             # unify chunk_size
             chunk_size=chunk_size,
         )
-
-    # For flash attention
-    # permute outside of timer
     torch.cuda.synchronize()
 
     start_event = [
@@ -909,8 +906,8 @@ def bench_xa(
 
 def main():
     args = parse_args()
-    # lens = [8, 16, 32, 64]
-    lens = [512, 1024]
+    lens = [8, 16, 32, 64, 128]
+    # lens = [16]
     if args.full:
         lens = [8, 16, 32, 64, 128, 256, 512, 768,] #1024]
     random.seed(args.seed)
@@ -941,7 +938,7 @@ def main():
                 layer_to_save=layer_to_save,
                 target_len=length * 1024,
                 token=args.t,
-                cut=True, # only use first layer
+                cut=False, # NOTE: only use first layer if OOM
             )
             input_ids = generate_prompt(tokenizer,
                                         length * 1024,
@@ -1042,9 +1039,9 @@ def main():
 
         #
         # Sparse-attn
-        #
-        # threshold = torch.tensor(llama_fuse_8)[layer_to_save]
-        threshold = args.th  # NOTE: TUNE for model accuracy and speed
+        # ### NOTE: TUNE for model accuracy and speed
+        threshold = torch.tensor(llama_fuse_8)[layer_to_save]
+        # threshold = args.th 
 
         x16_times = []
         x8_times = []
@@ -1088,11 +1085,11 @@ def main():
                     x16_times.append(xa_time)
                 elif stride == 8:
                     x8_times.append(xa_time)
-            if args.vv:
-                for i, x16_time in enumerate(x16_times):
-                    print(f"X16 chunk {i}: {x16_time:.2f}ms")
-                for i, x8_time in enumerate(x8_times):
-                    print(f"X8 chunk {i}: {x8_time:.2f}ms")
+        if args.vv:
+            for i, x16_time in enumerate(x16_times):
+                print(f"X16 chunk {i}: {x16_time:.2f}ms")
+            for i, x8_time in enumerate(x8_times):
+                print(f"X8 chunk {i}: {x8_time:.2f}ms")
 
             #
             # VERIFY TODO one-shot should match sequential, but possible?
@@ -1136,7 +1133,7 @@ def main():
         fa = sum(fa_times) / len(fa_times)
         x16 = sum(x16_times) / len(x16_times)
         x8 = sum(x8_times) / len(x8_times)
-        print(f"FA: {fa:.2f}ms, X16: {x16:.2f}ms, X8: {x8:.2f}ms")
+        print(f"avgLatency: FA: {fa:.2f}ms, X16: {x16:.2f}ms, X8: {x8:.2f}ms")
         print('*' * 120)
         # break
 
