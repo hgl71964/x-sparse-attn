@@ -920,7 +920,6 @@ def main():
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    print(f'Model: {args.m}, Dataset: {args.d}, context length: {lens}')
     device = torch.device("cuda:0")
     chunk_size = 4096
 
@@ -928,7 +927,7 @@ def main():
         #
         # GEN
         #
-        print(f"Testing {length}K")
+        print(f"Testing {length}K, Model: {args.m}, Dataset: {args.d}")
         query_path = f"output/query_{length*1024}.pkl"
         key_path = f"output/key_{length*1024}.pkl"
         layer_to_save = 12
@@ -1012,7 +1011,7 @@ def main():
               f"q.shape: {q.shape}, {q.dtype}\n"
               f"k.shape: {k.shape}, {k.dtype}\n"
               f"v.shape: {v.shape}, {v.dtype}\n"
-              f'num_chunks: {num_chunks}\n')
+              f'num_chunks: {num_chunks}, chunk_size: {chunk_size}\n')
         #
         # FA
         #
@@ -1037,10 +1036,6 @@ def main():
             fa_time = bench_fa(q_chunk, k_all, v_all, num_iterations,
                                num_warmup, cache)
             fa_times.append(fa_time)
-        if args.vv:
-            for i, fa_time in enumerate(fa_times):
-                print(f"FA chunk {i}: {fa_time:.2f}ms")
-
         #
         # Sparse-attn
         # ### NOTE: TUNE for model accuracy and speed
@@ -1101,11 +1096,6 @@ def main():
                         x16_times.append(xa_time)
                     elif stride == 8:
                         x8_times.append(xa_time)
-        if args.vv:
-            for i, x16_time in enumerate(x16_times):
-                print(f"X16 chunk {i}: {x16_time:.2f}ms")
-            for i, x8_time in enumerate(x8_times):
-                print(f"X8 chunk {i}: {x8_time:.2f}ms")
 
             #
             # VERIFY TODO one-shot should match sequential, but possible?
@@ -1149,7 +1139,15 @@ def main():
         fa = sum(fa_times) / len(fa_times)
         x16 = sum(x16_times) / len(x16_times) if len(x16_times) > 0 else 0
         x8 = sum(x8_times) / len(x8_times) if len(x8_times) > 0 else 0
+        print('\nSpeedup: ')
         print(f"avgLatency: FA: {fa:.2f}ms, X16: {x16:.2f}ms, X8: {x8:.2f}ms")
+        if args.vv:
+            for i in range(num_chunks):
+                fa_time = fa_times[i]
+                x16_time = x16_times[i] if len(x16_times) > 0 else 0
+                x8_time = x8_times[i] if len(x8_times) > 0 else 0
+                print(f"FA chunk {i}: {fa_time:.2f}ms, X16: {x16_time:.2f}ms, X8: {x8_time:.2f}ms")
+
         print('*' * 120)
         # break
 
