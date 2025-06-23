@@ -913,7 +913,7 @@ def bench_xa(
 def main():
     args = parse_args()
     lens = [8, 16, 32, 64, 128]
-    # lens = [16]
+    lens = [256]
     if args.full:
         lens = [8, 16, 32, 64, 128, 256, 512, 768,] #1024]
     random.seed(args.seed)
@@ -923,6 +923,12 @@ def main():
     device = torch.device("cuda:0")
     chunk_size = 4096
 
+    # ### NOTE: TUNE for model accuracy and speed
+    layer_to_save = 12
+    # threshold = torch.tensor(llama_fuse_8)[layer_to_save]
+    threshold = args.th 
+
+
     for length in lens:
         #
         # GEN
@@ -930,7 +936,6 @@ def main():
         print(f"Testing {length}K, Model: {args.m}, Dataset: {args.d}")
         query_path = f"output/query_{length*1024}.pkl"
         key_path = f"output/key_{length*1024}.pkl"
-        layer_to_save = 12
 
         if not os.path.exists(query_path) or not os.path.exists(key_path):
             print(f'[NEW Q, K, V]')
@@ -1002,7 +1007,7 @@ def main():
 
         num_iterations = 100
         num_warmup = 20
-        cache = torch.empty(int(256e6), dtype=torch.int8, device='cuda')
+        cache = torch.empty(int(256e6), dtype=torch.int8, device=device)
 
         q_len = q.shape[-2]
         num_chunks = q_len // chunk_size
@@ -1038,10 +1043,6 @@ def main():
             fa_times.append(fa_time)
         #
         # Sparse-attn
-        # ### NOTE: TUNE for model accuracy and speed
-        # threshold = torch.tensor(llama_fuse_8)[layer_to_save]
-        threshold = args.th 
-
         x16_times = []
         x8_times = []
 
