@@ -905,9 +905,10 @@ def bench_xa(
     times = [s.elapsed_time(e) for s, e in zip(start_event, end_event)]
     avg_time = _summarize_statistics(times)
     gc.collect()
-    # num_to_compute = (k_block_num + 1) * k_block_num / 2 * num_heads
+    num_to_compute = (k_block_num + 1) * k_block_num / 2 * num_heads
+    density = ref_mask.sum() / num_to_compute
     # print(f"{i}-th density: {ref_mask.sum() / num_to_compute:.3f}")
-    return avg_time
+    return avg_time, density
 
 
 def main():
@@ -1044,7 +1045,9 @@ def main():
         #
         # Sparse-attn
         x16_times = []
+        x16_density = []
         x8_times = []
+        x8_density = []
 
         # for stride in [8, 16]:
         for stride in [16, 8]:
@@ -1082,7 +1085,7 @@ def main():
                     print(f"{i}-th density: {ref_mask.sum() / num_to_compute:.3f}")
                 else:
                     # bench
-                    xa_time = bench_xa(
+                    xa_time, density = bench_xa(
                         q_chunk,
                         k_all,
                         v_all,
@@ -1095,8 +1098,10 @@ def main():
                     )
                     if stride == 16:
                         x16_times.append(xa_time)
+                        x16_density.append(density)
                     elif stride == 8:
                         x8_times.append(xa_time)
+                        x8_density.append(density)
 
             #
             # VERIFY TODO one-shot should match sequential, but possible?
@@ -1147,7 +1152,9 @@ def main():
                 fa_time = fa_times[i]
                 x16_time = x16_times[i] if len(x16_times) > 0 else 0
                 x8_time = x8_times[i] if len(x8_times) > 0 else 0
-                print(f"FA chunk {i}: {fa_time:.2f}ms, X16: {x16_time:.2f}ms, X8: {x8_time:.2f}ms")
+                x16_den = x16_density[i]
+                x8_den = x8_density[i]
+                print(f"FA chunk {i}: {fa_time:.2f}ms, X16: {x16_time:.2f}ms, X8: {x8_time:.2f}ms, x16 density: {x16_den:.3f}, x8 density: {x8_den:.3f}")
 
         print('*' * 120)
         # break

@@ -43,7 +43,7 @@ def parse_attention_log(log_text: str) -> Dict[str, Dict[str, Any]]:
 
         # Extract average latencies
         avg_latencies = {}
-        chunk_data = {'FA': [], 'X16': [], 'X8': []}
+        chunk_data = {'FA': [], 'X16': [], 'X8': [], 'X16_density': [], 'X8_density': []}
 
         for line in lines:
             # Parse average latency line
@@ -66,6 +66,8 @@ def parse_attention_log(log_text: str) -> Dict[str, Dict[str, Any]]:
                 fa_match = re.search(r'FA chunk \d+: ([\d.]+)ms', line)
                 x16_match = re.search(r'X16: ([\d.]+)ms', line)
                 x8_match = re.search(r'X8: ([\d.]+)ms', line)
+                x16_density = re.search(r'x16 density: ([\d.]+),', line)
+                x8_density = re.search(r'x8 density: ([\d.]+)', line)
 
                 if fa_match:
                     chunk_data['FA'].append(float(fa_match.group(1)))
@@ -73,6 +75,10 @@ def parse_attention_log(log_text: str) -> Dict[str, Dict[str, Any]]:
                     chunk_data['X16'].append(float(x16_match.group(1)))
                 if x8_match:
                     chunk_data['X8'].append(float(x8_match.group(1)))
+                if x16_density:
+                    chunk_data['X16_density'].append(float(x16_density.group(1)))
+                if x8_density:
+                    chunk_data['X8_density'].append(float(x8_density.group(1)))
 
         # Store results for this sequence length
         if avg_latencies and any(chunk_data.values()):
@@ -93,7 +99,7 @@ def print_results(results: Dict[str, Dict[str, Any]]):
 
         print("Chunk Latencies:")
         for method, latencies in data['chunk_latencies'].items():
-            print(f"  {method}: {latencies}")
+            print(f"{method}={latencies}")
 
 def main():
     args = parse_args()
