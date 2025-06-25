@@ -6,7 +6,6 @@ import pickle
 import torch
 import time
 from xattn.src.load_llama import load_fake_model, FastPrefillConfig
-from xattn.threshold.llama_threshold import llama_fuse_8, llama_fuse_16
 from transformers import StaticCache
 from tqdm import tqdm
 import os
@@ -925,9 +924,12 @@ def main():
     chunk_size = 4096
 
     # ### NOTE: TUNE for model accuracy and speed
-    layer_to_save = 12
+    from xattn.threshold.llama_threshold import llama_fuse_8, llama_fuse_16
+    from xattn.threshold.aya_threshold import aya_8b
+    layer_to_save = 0
     # threshold = torch.tensor(llama_fuse_8)[layer_to_save]
-    threshold = args.th 
+    threshold = torch.tensor(aya_8b)[layer_to_save]
+    # threshold = args.th 
 
 
     for length in lens:
