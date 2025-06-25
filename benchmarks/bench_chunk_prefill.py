@@ -22,6 +22,7 @@ def parse_args():
     parser.add_argument("--full", action="store_true")
     parser.add_argument("--just_run", action="store_true", help='just_run xattn chunk-prefill')
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--layer_to_save", type=int, default=12)
     parser.add_argument("-t", type=str, default=None)
     parser.add_argument("--th",
                         type=float,
@@ -920,23 +921,24 @@ def main():
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
 
-    device = torch.device("cuda:0")
+    # device = torch.device("cuda:0")
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     chunk_size = 4096
 
     # ### NOTE: TUNE for model accuracy and speed
     from xattn.threshold.llama_threshold import llama_fuse_8, llama_fuse_16
     from xattn.threshold.aya_threshold import aya_8b
-    layer_to_save = 0
+    layer_to_save = args.layer_to_save
     # threshold = torch.tensor(llama_fuse_8)[layer_to_save]
-    threshold = torch.tensor(aya_8b)[layer_to_save]
-    # threshold = args.th 
+    # threshold = torch.tensor(aya_8b)[layer_to_save]
+    threshold = args.th 
 
 
     for length in lens:
         #
         # GEN
         #
-        print(f"Testing {length}K, Model: {args.m}, Dataset: {args.d}")
+        print(f"Testing {length}K, Model: {args.m}, Dataset: {args.d}, layer: {layer_to_save}")
         query_path = f"output/query_{length*1024}.pkl"
         key_path = f"output/key_{length*1024}.pkl"
 
